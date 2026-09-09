@@ -1,0 +1,14 @@
+AGENT "tweet-creator"
+
+MEMORY {
+  topic: "AI safety"
+  max_chars: 280
+}
+
+STEP research TOOL web_search INPUT { q: $topic, n: 3 } OUTPUT articles
+
+REASON "Create an engaging tweet about this topic based on the articles" ON $articles OUTPUT tweet
+
+VERIFY $tweet != ""
+
+RETURN { tweet: $tweet, source_count: 3 }

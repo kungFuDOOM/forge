@@ -1,0 +1,16 @@
+AGENT "sales-analyzer"
+
+MEMORY {
+  region: "north"
+  quarter: "Q4"
+}
+
+STEP get_sales TOOL sales_data INPUT { region: $region, period: $quarter } OUTPUT raw_sales
+
+STEP filter FILTER amount > 10000 ON $raw_sales OUTPUT large_deals
+
+REASON "Identify the trend in these large deals" ON $large_deals OUTPUT trend
+
+VERIFY $large_deals != null
+
+RETURN { deals: $large_deals, trend: $trend }

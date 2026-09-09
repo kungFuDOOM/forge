@@ -1,0 +1,16 @@
+AGENT "web-researcher"
+
+MEMORY {
+  query: "latest AI safety papers"
+  max_results: 5
+}
+
+STEP search TOOL web_search INPUT { q: $query, n: $max_results } OUTPUT results
+
+STEP filter_papers FILTER relevance > 0.8 ON $results OUTPUT top_papers
+
+REASON "Summarize the key findings from these papers" ON $top_papers OUTPUT summary
+
+VERIFY $top_papers != null
+
+RETURN { papers: $top_papers, summary: $summary }

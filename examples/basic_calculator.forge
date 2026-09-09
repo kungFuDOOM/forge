@@ -1,0 +1,14 @@
+AGENT "basic-calculator"
+
+MEMORY {
+  a: 15
+  b: 7
+}
+
+STEP add TOOL arithmetic_add INPUT { x: $a, y: $b } OUTPUT sum
+
+REASON "Explain what the sum represents in a short sentence" ON $sum OUTPUT explanation
+
+VERIFY $sum > 0
+
+RETURN { result: $sum, note: $explanation }

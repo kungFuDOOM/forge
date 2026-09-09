@@ -1,0 +1,13 @@
+AGENT "simple-filter"
+
+MEMORY {
+  threshold: 100
+}
+
+STEP check TOOL get_value INPUT { } OUTPUT raw
+
+STEP filtered FILTER $raw > $threshold ON $raw OUTPUT result
+
+VERIFY $result != $raw
+
+RETURN { final: $result }

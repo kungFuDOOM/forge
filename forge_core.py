@@ -558,10 +558,11 @@ class Lexer:
                 tokens.append(Token("OP", matched_op, line, col))
                 continue
 
-            # Punctuation
-            if ch in "{}:,":
+            # Punctuation — '=' accepted as alias for ':' (common LLM slip)
+            if ch in "{}:,=":
                 self._advance()
-                tokens.append(Token(ch, ch, line, col))
+                tok_ch = ":" if ch == "=" else ch
+                tokens.append(Token(tok_ch, tok_ch, line, col))
                 continue
 
             # Identifier / keyword

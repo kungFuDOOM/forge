@@ -61,17 +61,25 @@ from forge_runtime import (
 # =============================================================================
 
 FORGE_SPEC_BRIEF = """
-Forge is an agent programming language. Rules:
-- Keywords are UPPERCASE: AGENT, MEMORY, STEP, TOOL, FILTER, INPUT, OUTPUT, ON, REASON, VERIFY, RETURN
-- Variables use $prefix: $var
-- Program order: AGENT → MEMORY (optional) → STEP+ → REASON (optional) → VERIFY (optional) → RETURN
-- STEP forms:
-  STEP name TOOL tool_name INPUT { k: $v } OUTPUT result_var
-  STEP name FILTER condition ON $var OUTPUT result_var
-- Conditions: $a > 0, field > 0.8, $x != null  (ops: > < >= <= == !=)
-- RETURN ends the program. Objects: { key: $var }
-- No loops, no functions, no imports in v0.1.
-- Emit ONLY Forge code, no markdown fences, no explanation.
+Forge is an AI-native agent language (not Python). Emit ONLY Forge.
+
+Skeleton (always this order):
+  AGENT "name"
+  MEMORY { key: value }
+  STEP name TOOL tool_name INPUT { k: $var } OUTPUT out_var
+  STEP name FILTER field > 0.8 ON $list OUTPUT filtered
+  REASON "prompt" ON $var OUTPUT out_var
+  VERIFY $var != null
+  RETURN { key: $var }
+
+Rules:
+- Keywords UPPERCASE only.
+- Variables always $name.
+- Strings use double quotes.
+- MEMORY uses braces: MEMORY { a: 1 b: 2 }
+- At least one STEP. RETURN is last.
+- Tools available: arithmetic_add, web_search, get_value, sales_data.
+- No markdown. No explanation. Stop after RETURN.
 """.strip()
 
 FEW_SHOT: list[tuple[str, str]] = [
@@ -322,27 +330,10 @@ def estimate_tokens(text: str) -> int:
 # =============================================================================
 
 def extract_code(response: str, prefer_json: bool = False) -> str:
-    """Pull Forge source or JSON out of an LLM response."""
-    text = response.strip()
+    """Pull Forge source or JSON out of an LLM response, then repair near-misses."""
+    from forge_repair import normalize_llm_output
 
-    # Fenced blocks
-    fence = re.search(r"```(?:forge|json|javascript|text)?\s*([\s\S]*?)```", text, re.I)
-    if fence:
-        text = fence.group(1).strip()
-
-    if prefer_json or text.lstrip().startswith("{"):
-        # Extract outermost JSON object
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return text[start : end + 1]
-
-    # Surface syntax: from AGENT to end
-    m = re.search(r"(AGENT\s+[\s\S]*)", text)
-    if m:
-        return m.group(1).strip()
-
-    return text
+    return normalize_llm_output(response, prefer_json=prefer_json)
 
 
 # =============================================================================
@@ -375,6 +366,8 @@ class RunResult:
 
 
 def evaluate_generation(task_id: str, response: str, mode: str = "text") -> RunResult:
+    from forge_repair import try_compile_repaired
+
     extracted = extract_code(response, prefer_json=(mode == "json"))
     est_c = estimate_tokens(extracted)
     rr = RunResult(
@@ -388,11 +381,19 @@ def evaluate_generation(task_id: str, response: str, mode: str = "text") -> RunR
         est_completion_tokens=est_c,
     )
     try:
-        program = compile_auto(extracted)
+        program, used, notes = try_compile_repaired(response if mode != "json" else extracted)
+        rr.extracted = used
         rr.parse_ok = True
+        if notes:
+            rr.usage = {**(rr.usage or {}), "repair": notes}
     except Exception as e:
-        rr.error = f"parse: {e}"
-        return rr
+        # fallback: direct compile of extracted
+        try:
+            program = compile_auto(extracted)
+            rr.parse_ok = True
+        except Exception as e2:
+            rr.error = f"parse: {e2}"
+            return rr
 
     try:
         tools = ToolRegistry()
@@ -462,7 +463,7 @@ def run_benchmark(
             continue
 
         rr = evaluate_generation(tid, response, mode=mode)
-        rr.usage = usage
+        rr.usage = {**(rr.usage or {}), **usage}
         rr.est_prompt_tokens = est_p
         results.append(rr)
         status = "OK" if rr.parse_ok and rr.runtime_ok else "FAIL"
