@@ -1,0 +1,2 @@
+# Required only for live LLM (REASON runtime + benchmark)
+openai>=1.0.0
