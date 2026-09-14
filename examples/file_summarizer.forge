@@ -1,0 +1,13 @@
+AGENT "file-summarizer"
+
+MEMORY {
+  path: "examples/sample_notes.txt"
+}
+
+STEP load TOOL read_file INPUT { path: $path } OUTPUT doc
+
+REASON "Summarize this document in two short bullets" ON $doc OUTPUT summary
+
+VERIFY $doc != null
+
+RETURN { path: $path, summary: $summary, chars: $doc }

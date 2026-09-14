@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forge — JavaScript for AI</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --card: #121821;
+      --text: #e7eef7;
+      --muted: #9aa8b8;
+      --accent: #6ee7b7;
+      --accent2: #38bdf8;
+      --border: #1f2a37;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #122033 0%, var(--bg) 55%);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 48px 20px 80px; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 8px; letter-spacing: -0.03em; }
+    .tag { color: var(--accent); font-weight: 600; }
+    .lead { color: var(--muted); font-size: 1.15rem; max-width: 40rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0 40px; }
+    a.btn {
+      display: inline-block; text-decoration: none; color: #041016;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      padding: 10px 16px; border-radius: 10px; font-weight: 700;
+    }
+    a.ghost {
+      display: inline-block; text-decoration: none; color: var(--text);
+      border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px;
+    }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 14px; padding: 18px;
+    }
+    .card h3 { margin: 0 0 8px; font-size: 1.05rem; }
+    .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    pre {
+      background: #0a1018; border: 1px solid var(--border); border-radius: 14px;
+      padding: 16px; overflow: auto; font-size: 0.85rem; line-height: 1.45;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { color: var(--muted); }
+    footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <p class="tag">Forge</p>
+    <h1>JavaScript for AI</h1>
+    <p class="lead">
+      An agent programming language made for how AIs generate code —
+      explicit, unambiguous, dual text + JSON AST.
+      Not another Python framework.
+    </p>
+    <div class="row">
+      <a class="btn" href="https://github.com/kungFuDOOM/forge">GitHub</a>
+      <a class="ghost" href="https://github.com/kungFuDOOM/forge#new-user--60-seconds">Quickstart</a>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Usable</h3>
+        <p><code>./forge quickstart</code> — run a demo, create your first agent, in under a minute.</p>
+      </div>
+      <div class="card">
+        <h3>Useful</h3>
+        <p>Real tools: <code>http_get</code>, <code>read_file</code>, <code>write_file</code> — plus search/sales mocks.</p>
+      </div>
+      <div class="card">
+        <h3>AI-native</h3>
+        <p>LLMs emit Forge (or JSON AST). Repair → validate → run. Fewer retries than Python glue.</p>
+      </div>
+    </div>
+
+    <h2 style="margin-top:40px">A complete program</h2>
+    <pre><code>AGENT "url-fetcher"
+
+MEMORY {
+  url: "https://example.com"
+}
+
+STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
+
+REASON "In one sentence, what is this page about?" ON $page OUTPUT summary
+
+VERIFY $page != null
+
+RETURN { url: $url, summary: $summary }</code></pre>
+
+    <h2>Install &amp; run</h2>
+    <pre><code>git clone https://github.com/kungFuDOOM/forge.git
+cd forge
+./forge quickstart
+./forge run examples/url_fetcher.forge
+./forge run examples/file_summarizer.forge</code></pre>
+
+    <footer>
+      Vision: SQL for AI agents. Human holds the vision; AI builds the language.
+    </footer>
+  </div>
+</body>
+</html>

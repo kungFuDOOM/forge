@@ -300,10 +300,113 @@ class ToolRegistry:
                 {"deal": "Delta LLC", "amount": 5000, "region": region, "period": period},
             ]
 
+        def http_get(inputs: dict) -> Any:
+            """Fetch a URL. inputs: url (required), max_bytes (optional)."""
+            import urllib.error
+            import urllib.request
+
+            url = inputs.get("url") or inputs.get("u")
+            if not url or not isinstance(url, str):
+                raise ForgeRuntimeError("http_get requires string input: url")
+            if not url.startswith(("http://", "https://")):
+                raise ForgeRuntimeError("http_get only allows http:// or https:// URLs")
+            max_bytes = int(inputs.get("max_bytes", 100_000) or 100_000)
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "ForgeAgent/0.1"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    raw = resp.read(max_bytes + 1)
+                    truncated = len(raw) > max_bytes
+                    body = raw[:max_bytes].decode("utf-8", errors="replace")
+                    return {
+                        "status": getattr(resp, "status", 200),
+                        "url": url,
+                        "content_type": resp.headers.get("Content-Type", ""),
+                        "body": body,
+                        "truncated": truncated,
+                        "chars": len(body),
+                    }
+            except urllib.error.HTTPError as e:
+                body = e.read(max_bytes).decode("utf-8", errors="replace") if e.fp else ""
+                return {
+                    "status": e.code,
+                    "url": url,
+                    "content_type": e.headers.get("Content-Type", "") if e.headers else "",
+                    "body": body,
+                    "truncated": False,
+                    "chars": len(body),
+                    "error": str(e),
+                }
+            except Exception as e:
+                raise ForgeRuntimeError(f"http_get failed: {e}") from e
+
+        def read_file(inputs: dict) -> Any:
+            """Read a local text file (sandboxed to cwd). inputs: path."""
+            from pathlib import Path
+
+            path = inputs.get("path") or inputs.get("file")
+            if not path or not isinstance(path, str):
+                raise ForgeRuntimeError("read_file requires string input: path")
+            p = Path(path).expanduser()
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            p = p.resolve()
+            cwd = Path.cwd().resolve()
+            try:
+                rel = p.relative_to(cwd)
+            except ValueError as e:
+                raise ForgeRuntimeError(
+                    f"read_file path must be under current directory: {cwd}"
+                ) from e
+            if not p.exists() or not p.is_file():
+                raise ForgeRuntimeError(f"File not found: {path}")
+            max_bytes = int(inputs.get("max_bytes", 200_000) or 200_000)
+            data = p.read_bytes()[: max_bytes + 1]
+            truncated = len(data) > max_bytes
+            text = data[:max_bytes].decode("utf-8", errors="replace")
+            return {
+                "path": str(rel),
+                "body": text,
+                "chars": len(text),
+                "truncated": truncated,
+            }
+
+        def write_file(inputs: dict) -> Any:
+            """Write text to a file under cwd. inputs: path, body."""
+            from pathlib import Path
+
+            path = inputs.get("path") or inputs.get("file")
+            body = inputs.get("body")
+            if not path or not isinstance(path, str):
+                raise ForgeRuntimeError("write_file requires string input: path")
+            if body is None:
+                raise ForgeRuntimeError("write_file requires input: body")
+            p = Path(path).expanduser()
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            p = p.resolve()
+            cwd = Path.cwd().resolve()
+            try:
+                p.relative_to(cwd)
+            except ValueError as e:
+                raise ForgeRuntimeError(
+                    f"write_file path must be under current directory: {cwd}"
+                ) from e
+            p.parent.mkdir(parents=True, exist_ok=True)
+            text = body if isinstance(body, str) else json.dumps(body, indent=2, default=str)
+            p.write_text(text, encoding="utf-8")
+            return {"path": str(p.relative_to(cwd)), "chars": len(text), "ok": True}
+
         self.register("arithmetic_add", arithmetic_add)
         self.register("web_search", web_search)
         self.register("get_value", get_value)
         self.register("sales_data", sales_data)
+        self.register("http_get", http_get)
+        self.register("read_file", read_file)
+        self.register("write_file", write_file)
 
 
 # =============================================================================

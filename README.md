@@ -1,158 +1,108 @@
 # Forge — JavaScript for AI
 
-**An AI-native programming language for agents and LLMs.**  
-Made by AI, for AI — explicit, unambiguous, dual text + JSON AST.
+An **AI-native agent language**. Write a short program. Run it.  
+Built for how AIs generate code — not 1990s human IDE habits.
 
-**Repo:** https://github.com/kungFuDOOM/forge
-
----
-
-## Why Forge exists
-
-Python and JavaScript were built for humans decades ago. Agents forced into those languages fight syntax, precedence, and framework glue.
-
-**Forge is the agent loop as a language:**
-
-```
-AGENT → MEMORY → STEP/TOOL → REASON → VERIFY → RETURN
-```
-
-LLMs can emit **surface syntax** or **JSON AST** (skip parsing entirely). Same semantics.
+**Repo:** https://github.com/kungFuDOOM/forge  
+**Landing:** [docs/index.html](docs/index.html)
 
 ---
 
-## New user — 60 seconds
+## 60-second start (usable)
 
 ```bash
 git clone https://github.com/kungFuDOOM/forge.git
 cd forge
-
-# 1) See it work (no API key)
-python3 forge_cli.py examples basic-calculator
-
-# 2) Run a file
-python3 forge_cli.py run examples/basic_calculator.forge
-
-# 3) Scaffold your own agent
-python3 forge_cli.py init my-researcher
-python3 forge_cli.py run my-researcher.forge
-
-# 4) Check setup
-python3 forge_cli.py doctor
+chmod +x forge
+./forge quickstart
 ```
 
-### Optional: free local LLM (Ollama)
+That runs a demo and creates `my-first-agent.forge`. Then:
 
 ```bash
-./start_ollama.sh
-ollama pull llama3.2:1b   # or llama3.2 for stronger generation
-
-# Ask an AI to write Forge, then run it
-python3 forge_generate.py --backend ollama "Add 3 and 9, verify total > 10, return total"
-
-# Measure generation reliability
-python3 forge_cli.py bench --backend ollama
+./forge run my-first-agent.forge
+./forge check my-first-agent.forge
+./forge tools
 ```
+
+No API key required for demos (`--llm mock` is the default).
 
 ---
 
-## CLI reference
+## Useful agents (real tools)
 
 | Command | What it does |
 |---------|----------------|
-| `python forge_cli.py examples` | List / run built-in demos |
-| `python forge_cli.py run FILE.forge` | Compile + execute |
-| `python forge_cli.py check FILE.forge` | Parse + validate (+ `--json` AST) |
-| `python forge_cli.py init NAME` | Scaffold a starter agent |
-| `python forge_cli.py repl` | Interactive REPL |
-| `python forge_cli.py doctor` | Local setup check |
-| `python forge_cli.py bench` | LLM generation benchmark |
-| `python forge_generate.py "…"` | LLM writes Forge → repair → run |
+| `./forge run examples/url_fetcher.forge` | **HTTP GET** a URL, summarize |
+| `./forge run examples/file_summarizer.forge` | **Read a file**, summarize |
+| `./forge run examples/save_report.forge` | Research mock + **write file** |
+| `./forge init blog --template http` | Scaffold an HTTP agent |
+
+Built-in tools: `http_get`, `read_file`, `write_file`, `web_search`, `sales_data`, `arithmetic_add`, `get_value`
 
 ---
 
-## Example program
+## Example
 
 ```
-AGENT "basic-calculator"
+AGENT "url-fetcher"
 
 MEMORY {
-  a: 15
-  b: 7
+  url: "https://example.com"
 }
 
-STEP add TOOL arithmetic_add INPUT { x: $a, y: $b } OUTPUT sum
+STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
 
-REASON "Explain what the sum represents in a short sentence" ON $sum OUTPUT explanation
+REASON "In one sentence, what is this page about?" ON $page OUTPUT summary
 
-VERIFY $sum > 0
+VERIFY $page != null
 
-RETURN { result: $sum, note: $explanation }
+RETURN { url: $url, summary: $summary }
 ```
 
 ---
 
-## Dual representation
+## Commands
 
-| Path | Input | Best for |
-|------|--------|----------|
-| Surface syntax | Human-readable text | Humans, demos |
-| JSON AST | Strict AST object | LLM generation (zero syntax errors) |
-
-Both compile to identical AST nodes. JSON AST is the source of truth.
-
----
-
-## Design (locked)
-
-- Agent-first primitives: `AGENT`, `MEMORY`, `STEP`, `TOOL`, `FILTER`, `REASON`, `VERIFY`, `RETURN`
-- `$variables`, uppercase keywords, no precedence surprises
-- Generation pipeline: **emit → repair → validate → run**
-- v0.1: linear workflows (loops/functions later)
-- See [VISION.md](VISION.md)
-
----
-
-## Reliability metrics
-
-| Target | Metric |
-|--------|--------|
-| ≥ 97% | LLM generation success (parse + run) |
-| High | Token efficiency vs Python agent glue |
-| ≥ 95% | Execution correctness |
-
-| Suite | Model | Result |
-|-------|-------|--------|
-| 5 tasks (text) | `llama3.2:1b` | **100%** |
-| **18 tasks (text)** | `llama3.2:1b` | **77.8%** |
-| 18 tasks (JSON AST) | `llama3.2:1b` | **0%** (too small to emit valid AST JSON) |
-
-See [BENCH.md](BENCH.md). Next: stronger local model (`llama3.2` 3B) + keep repair climbing toward **≥97% on 18+ tasks**.
-
----
-
-## Project layout
-
-| File | Role |
-|------|------|
-| `forge_core.py` | AST, lexer, parser, JSON AST, validator |
-| `forge_runtime.py` | Evaluator, tools, LLM clients, REPL |
-| `forge_repair.py` | LLM output normalize / repair |
-| `forge_cli.py` | User-facing CLI |
-| `forge_generate.py` | Natural language → Forge → run |
-| `forge_benchmark.py` | Generation reliability harness |
-| `examples/*.forge` | Sample agents |
-
----
-
-## Built-in mock tools
-
-`arithmetic_add` · `web_search` · `get_value` · `sales_data`
-
-Register your own:
-
-```python
-from forge_runtime import ToolRegistry
-reg = ToolRegistry()
-reg.register("my_tool", lambda inputs: {"ok": True})
 ```
+./forge                  # welcome
+./forge quickstart       # guided first run
+./forge run FILE.forge   # execute
+./forge check FILE.forge # validate
+./forge init NAME        # new agent (--template basic|http|file)
+./forge examples         # list/run demos
+./forge tools            # tool reference
+./forge tokens FILE      # rough token vs Python/LangChain
+./forge doctor           # setup check
+./forge repl             # interactive
+```
+
+Same via `python3 forge_cli.py …`.
+
+---
+
+## Optional: local LLM
+
+```bash
+./start_ollama.sh
+ollama pull llama3.2:1b
+./forge run my-first-agent.forge --llm ollama
+python3 forge_generate.py --backend ollama "Add 3 and 9, return total"
+```
+
+---
+
+## Design
+
+- Primitives: `AGENT` `MEMORY` `STEP` `TOOL` `FILTER` `REASON` `VERIFY` `RETURN`
+- Dual path: text syntax **or** JSON AST
+- Pipeline: emit → repair → validate → run
+- See [VISION.md](VISION.md) · [BENCH.md](BENCH.md)
+
+## Reliability (local `llama3.2:1b`)
+
+| Suite | Result |
+|-------|--------|
+| 5 tasks (text) | 100% |
+| 18 tasks (text) | 77.8% |
+| 18 tasks (JSON AST) | 0% on 1B (use 3B+ for JSON) |

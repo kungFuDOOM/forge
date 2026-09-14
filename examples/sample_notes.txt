@@ -1,0 +1,16 @@
+Forge project notes
+===================
+
+Forge is an AI-native agent language. Programs look like:
+
+  AGENT → MEMORY → STEP/TOOL → REASON → VERIFY → RETURN
+
+Goals:
+- Higher LLM generation success than Python agent glue
+- Dual representation: human text syntax OR JSON AST
+- Real tools: http_get, read_file, write_file, plus demo mocks
+
+Next for users:
+1. Run ./forge quickstart
+2. Edit a .forge file
+3. Run ./forge run your-agent.forge

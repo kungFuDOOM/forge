@@ -1,0 +1,13 @@
+AGENT "url-fetcher"
+
+MEMORY {
+  url: "https://example.com"
+}
+
+STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
+
+REASON "In one sentence, what is this page about?" ON $page OUTPUT summary
+
+VERIFY $page != null
+
+RETURN { url: $url, summary: $summary, page: $page }

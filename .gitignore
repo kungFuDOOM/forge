@@ -8,3 +8,6 @@ venv/
 !package.json
 .DS_Store
 .ollama/
+out/
+my-first-agent.forge
+demo-http.forge

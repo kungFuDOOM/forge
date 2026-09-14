@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Forge launcher — use from the repo root: ./forge quickstart
+set -e
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$ROOT/forge_cli.py" "$@"

@@ -1,0 +1,16 @@
+AGENT "save-report"
+
+MEMORY {
+  topic: "weekly forge status"
+  out_path: "out/report.txt"
+}
+
+STEP research TOOL web_search INPUT { q: $topic, n: 3 } OUTPUT hits
+
+STEP save TOOL write_file INPUT { path: $out_path, body: $hits } OUTPUT saved
+
+REASON "Write a 3-sentence status report from these notes" ON $hits OUTPUT report
+
+VERIFY $saved != null
+
+RETURN { saved: $saved, preview: $report }
