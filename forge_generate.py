@@ -74,7 +74,12 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Ask an LLM to write Forge, then run it")
     p.add_argument("task", help="Natural language description of the agent")
     p.add_argument("--backend", default="auto", help="auto|ollama|openai")
-    p.add_argument("--mode", choices=["text", "json"], default="text")
+    p.add_argument(
+        "--mode",
+        choices=["text", "json"],
+        default="text",
+        help="text surface syntax (default; best for small local models) or json AST",
+    )
     p.add_argument("--no-run", action="store_true", help="Only generate + parse")
     p.add_argument("--live-reason", action="store_true", help="Use real LLM for REASON blocks")
     p.add_argument("--show-source", action="store_true", help="Print generated Forge")

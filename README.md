@@ -121,7 +121,13 @@ Both compile to identical AST nodes. JSON AST is the source of truth.
 | High | Token efficiency vs Python agent glue |
 | ≥ 95% | Execution correctness |
 
-Latest local Ollama `llama3.2:1b` bench: **20% → 80% → 100%** (AI-friendly syntax + repair pipeline). Target ≥97% met on 5-task suite; expanding task set next.
+| Suite | Model | Result |
+|-------|-------|--------|
+| 5 tasks (text) | `llama3.2:1b` | **100%** |
+| **18 tasks (text)** | `llama3.2:1b` | **77.8%** |
+| 18 tasks (JSON AST) | `llama3.2:1b` | **0%** (too small to emit valid AST JSON) |
+
+See [BENCH.md](BENCH.md). Next: stronger local model (`llama3.2` 3B) + keep repair climbing toward **≥97% on 18+ tasks**.
 
 ---
 

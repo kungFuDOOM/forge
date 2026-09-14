@@ -102,9 +102,9 @@ BENCHMARK_TASKS: list[dict[str, str]] = [
         "id": "temp-converter",
         "description": (
             "Create an agent 'temp-converter' with MEMORY celsius: 100. "
-            "Call TOOL arithmetic_add INPUT { x: $celsius, y: 0 } OUTPUT raw "
-            "(placeholder for conversion). REASON a short note about the temperature ON $raw. "
-            "VERIFY $raw > 0. RETURN { celsius: $celsius, note: $raw }."
+            "Call TOOL arithmetic_add INPUT { x: $celsius, y: 0 } OUTPUT raw. "
+            "REASON \"short note about the temperature\" ON $raw OUTPUT note. "
+            "VERIFY $raw > 0. RETURN { celsius: $celsius, note: $note }."
         ),
     },
     {
@@ -113,7 +113,7 @@ BENCHMARK_TASKS: list[dict[str, str]] = [
             "Create agent 'deal-finder'. MEMORY region: \"west\", quarter: \"Q1\". "
             "STEP get TOOL sales_data INPUT { region: $region, period: $quarter } OUTPUT sales. "
             "STEP big FILTER amount > 10000 ON $sales OUTPUT big_deals. "
-            "REASON 'What is the biggest opportunity?' ON $big_deals OUTPUT insight. "
+            "REASON \"What is the biggest opportunity?\" ON $big_deals OUTPUT insight. "
             "VERIFY $big_deals != null. RETURN { deals: $big_deals, insight: $insight }."
         ),
     },
@@ -123,7 +123,7 @@ BENCHMARK_TASKS: list[dict[str, str]] = [
             "Create agent 'news-digest'. MEMORY query: \"quantum computing news\", max_results: 4. "
             "STEP search TOOL web_search INPUT { q: $query, n: $max_results } OUTPUT hits. "
             "STEP top FILTER relevance > 0.7 ON $hits OUTPUT best. "
-            "REASON 'Write a 2-sentence digest' ON $best OUTPUT digest. "
+            "REASON \"Write a 2-sentence digest\" ON $best OUTPUT digest. "
             "VERIFY $best != null. RETURN { digest: $digest, count: $max_results }."
         ),
     },
@@ -144,19 +144,191 @@ BENCHMARK_TASKS: list[dict[str, str]] = [
             "VERIFY $total > 10. RETURN { total: $total }."
         ),
     },
+    {
+        "id": "double-add",
+        "description": (
+            "Agent 'double-add'. MEMORY a: 5, b: 5. "
+            "STEP s1 TOOL arithmetic_add INPUT { x: $a, y: $b } OUTPUT mid. "
+            "STEP s2 TOOL arithmetic_add INPUT { x: $mid, y: $b } OUTPUT total. "
+            "VERIFY $total > 10. RETURN { mid: $mid, total: $total }."
+        ),
+    },
+    {
+        "id": "east-sales",
+        "description": (
+            "Agent 'east-sales'. MEMORY region: \"east\", quarter: \"Q2\". "
+            "STEP pull TOOL sales_data INPUT { region: $region, period: $quarter } OUTPUT raw. "
+            "STEP huge FILTER amount > 12000 ON $raw OUTPUT big. "
+            "VERIFY $big != null. RETURN { region: $region, deals: $big }."
+        ),
+    },
+    {
+        "id": "safety-tweet",
+        "description": (
+            "Agent 'safety-tweet'. MEMORY topic: \"AI alignment\", max_chars: 280. "
+            "STEP research TOOL web_search INPUT { q: $topic, n: 3 } OUTPUT articles. "
+            "REASON \"Write one engaging tweet\" ON $articles OUTPUT tweet. "
+            "VERIFY $tweet != \"\". RETURN { tweet: $tweet }."
+        ),
+    },
+    {
+        "id": "value-check",
+        "description": (
+            "Agent 'value-check'. MEMORY threshold: 10. "
+            "STEP read TOOL get_value INPUT { } OUTPUT value. "
+            "VERIFY $value > $threshold. RETURN { value: $value }."
+        ),
+    },
+    {
+        "id": "paper-skim",
+        "description": (
+            "Agent 'paper-skim'. MEMORY query: \"LLM evaluation benchmarks\", max_results: 5. "
+            "STEP search TOOL web_search INPUT { q: $query, n: $max_results } OUTPUT results. "
+            "STEP keep FILTER relevance > 0.75 ON $results OUTPUT top. "
+            "REASON \"List top themes in 3 bullets\" ON $top OUTPUT themes. "
+            "VERIFY $top != null. RETURN { themes: $themes, papers: $top }."
+        ),
+    },
+    {
+        "id": "sum-only",
+        "description": (
+            "Agent 'sum-only'. MEMORY x: 100, y: 1. "
+            "STEP add TOOL arithmetic_add INPUT { x: $x, y: $y } OUTPUT sum. "
+            "RETURN { sum: $sum }."
+        ),
+    },
+    {
+        "id": "north-q4",
+        "description": (
+            "Agent 'north-q4'. MEMORY region: \"north\", quarter: \"Q4\". "
+            "STEP get TOOL sales_data INPUT { region: $region, period: $quarter } OUTPUT sales. "
+            "REASON \"One-sentence sales outlook\" ON $sales OUTPUT outlook. "
+            "VERIFY $sales != null. RETURN { outlook: $outlook }."
+        ),
+    },
+    {
+        "id": "filter-gate",
+        "description": (
+            "Agent 'filter-gate'. MEMORY threshold: 30. "
+            "STEP read TOOL get_value INPUT { } OUTPUT raw. "
+            "STEP gate FILTER $raw > $threshold ON $raw OUTPUT passed. "
+            "VERIFY $passed != null. RETURN { raw: $raw, passed: $passed }."
+        ),
+    },
+    {
+        "id": "multi-search",
+        "description": (
+            "Agent 'multi-search'. MEMORY query: \"rust async runtime\", n: 2. "
+            "STEP s TOOL web_search INPUT { q: $query, n: $n } OUTPUT hits. "
+            "STEP f FILTER relevance > 0.5 ON $hits OUTPUT kept. "
+            "VERIFY $kept != null. RETURN { kept: $kept, n: $n }."
+        ),
+    },
+    {
+        "id": "add-explain",
+        "description": (
+            "Agent 'add-explain'. MEMORY x: 2, y: 2. "
+            "STEP add TOOL arithmetic_add INPUT { x: $x, y: $y } OUTPUT sum. "
+            "REASON \"Explain the sum in five words\" ON $sum OUTPUT note. "
+            "VERIFY $sum > 0. RETURN { sum: $sum, note: $note }."
+        ),
+    },
+    {
+        "id": "west-filter",
+        "description": (
+            "Agent 'west-filter'. MEMORY region: \"west\", quarter: \"Q3\". "
+            "STEP get TOOL sales_data INPUT { region: $region, period: $quarter } OUTPUT sales. "
+            "STEP f FILTER amount > 9000 ON $sales OUTPUT deals. "
+            "REASON \"Name the strongest deal pattern\" ON $deals OUTPUT pattern. "
+            "VERIFY $deals != null. RETURN { deals: $deals, pattern: $pattern }."
+        ),
+    },
+    {
+        "id": "hello-search",
+        "description": (
+            "Agent 'hello-search'. MEMORY topic: \"hello world programming\". "
+            "STEP research TOOL web_search INPUT { q: $topic, n: 3 } OUTPUT hits. "
+            "VERIFY $hits != null. RETURN { topic: $topic, hits: $hits }."
+        ),
+    },
+    {
+        "id": "triple-sum",
+        "description": (
+            "Agent 'triple-sum'. MEMORY a: 1, b: 2. "
+            "STEP s1 TOOL arithmetic_add INPUT { x: $a, y: $b } OUTPUT t1. "
+            "STEP s2 TOOL arithmetic_add INPUT { x: $t1, y: $a } OUTPUT t2. "
+            "VERIFY $t2 >= 4. RETURN { t1: $t1, t2: $t2 }."
+        ),
+    },
 ]
+
+JSON_AST_BRIEF = """
+Emit ONLY a JSON object (Forge AST). Root node_type must be "program".
+Required keys: agent, memory (or null), steps (>=1), reason (or null), verify (or null), return.
+agent: {"node_type":"agent_decl","name":"..."}
+memory: {"node_type":"memory_block","entries":[{"node_type":"memory_entry","key":"k","value":{"node_type":"literal","value":1}}]}
+tool step action: {"node_type":"tool_call","tool_name":"arithmetic_add","inputs":{"x":{"node_type":"variable","name":"a"},"y":{"node_type":"variable","name":"b"}},"output_var":"sum"}
+filter action: {"node_type":"filter","condition":{"node_type":"comparison","left":"amount","operator":">","right":{"node_type":"literal","value":10000},"left_kind":"field"},"input_var":"sales","output_var":"big"}
+reason: {"node_type":"reason","prompt":"...","input_var":"sum","output_var":"note"}
+verify: {"node_type":"verify","condition":{"node_type":"comparison","left":{"node_type":"variable","name":"sum"},"operator":">","right":{"node_type":"literal","value":0},"left_kind":"expr"}}
+return: {"node_type":"return","value":{"node_type":"object_literal","properties":{"total":{"node_type":"variable","name":"sum"}}}}
+No markdown. JSON only.
+""".strip()
 
 
 def build_prompt(task_description: str, mode: str = "text", shots: Optional[int] = None) -> str:
     """
     Few-shot prompt for Forge generation.
 
-    Forge exists so AIs emit agent programs more reliably than in Python/JS.
-    Keep prompts short: fewer tokens in → fewer tokens out → higher success.
+    mode=text  → surface syntax
+    mode=json  → JSON AST (preferred for LLM reliability / fewer syntax failures)
     """
     if shots is None:
-        shots = int(os.environ.get("FORGE_BENCH_SHOTS", "2"))
+        # JSON AST examples are large — default to 1 shot for small local models
+        default_shots = "1" if mode == "json" else "2"
+        shots = int(os.environ.get("FORGE_BENCH_SHOTS", default_shots))
     examples = FEW_SHOT[: max(1, shots)]
+
+    if mode == "json":
+        # Prefer shortest examples — JSON AST few-shots are token-heavy
+        mini = (
+            "Agent 'mini-add'. MEMORY x: 3, y: 9. "
+            "STEP sum TOOL arithmetic_add INPUT { x: $x, y: $y } OUTPUT total. "
+            "VERIFY $total > 10. RETURN { total: $total }."
+        )
+        mini_code = '''
+AGENT "mini-add"
+MEMORY { x: 3 y: 9 }
+STEP sum TOOL arithmetic_add INPUT { x: $x, y: $y } OUTPUT total
+VERIFY $total > 10
+RETURN { total: $total }
+'''.strip()
+        json_examples = [(mini, mini_code)] + [
+            (d, c) for d, c in examples if "mini-add" not in d.lower()
+        ]
+        json_examples = json_examples[: max(1, shots)]
+
+        parts = [
+            "Forge JSON AST mode: emit a program as JSON (skip text syntax).",
+            JSON_AST_BRIEF,
+            "",
+            "Examples:",
+            "",
+        ]
+        for i, (desc, code) in enumerate(json_examples, 1):
+            parts.append(f"### Example {i}")
+            parts.append(f"Task: {desc}")
+            try:
+                prog = compile_forge(code)
+                parts.append("JSON AST:")
+                parts.append(json.dumps(_ast_to_dict(prog), separators=(",", ":")))
+            except Exception:
+                parts.append("(example omitted)")
+            parts.append("")
+        parts.append("### Your task")
+        parts.append(f"Task: {task_description}")
+        parts.append("Return ONLY the JSON AST object for this task.")
+        return "\n".join(parts)
 
     parts = [
         "Forge = AI-native agent language (not Python). Uppercase keywords. Variables use $.",
@@ -168,24 +340,12 @@ def build_prompt(task_description: str, mode: str = "text", shots: Optional[int]
     for i, (desc, code) in enumerate(examples, 1):
         parts.append(f"### Example {i}")
         parts.append(f"Task: {desc}")
-        if mode == "json":
-            try:
-                prog = compile_forge(code)
-                parts.append("Forge JSON AST:")
-                parts.append(ast_to_json(prog))
-            except Exception:
-                parts.append("Forge:")
-                parts.append(code)
-        else:
-            parts.append("Forge:")
-            parts.append(code)
+        parts.append("Forge:")
+        parts.append(code)
         parts.append("")
     parts.append("### Your task")
     parts.append(f"Task: {task_description}")
-    if mode == "json":
-        parts.append("Write a complete Forge program as a single JSON AST object (node_type: program). No markdown.")
-    else:
-        parts.append("Write a complete Forge program in surface syntax. Stop after RETURN. No markdown, no explanation.")
+    parts.append("Write a complete Forge program in surface syntax. Stop after RETURN. No markdown, no explanation.")
     return "\n".join(parts)
 
 

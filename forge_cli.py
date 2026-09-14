@@ -192,26 +192,37 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_bench(args: argparse.Namespace) -> int:
     from forge_benchmark import run_benchmark, summarize
 
-    results = run_benchmark(
-        mode=args.mode,
-        dry_run=args.dry_run,
-        backend=args.backend,
-    )
-    summary = summarize(results)
-    print("\nSUMMARY")
-    for k, v in summary.items():
-        print(f"  {k}: {v}")
-    out = Path(args.out)
-    out.write_text(
-        json.dumps(
-            {"summary": summary, "results": [r.to_dict() for r in results]},
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
-    print(f"Wrote {out}")
-    return 0 if summary.get("full_rate", 0) >= 0 else 1
+    modes = ["text", "json"] if args.mode == "both" else [args.mode]
+    combined = {"modes": {}}
+    worst_rate = 100.0
+
+    for mode in modes:
+        print(f"\n######## MODE: {mode} ########")
+        out_path = Path(args.out)
+        if args.mode == "both":
+            out_path = out_path.with_name(out_path.stem + f"_{mode}" + out_path.suffix)
+
+        results = run_benchmark(
+            mode=mode,
+            dry_run=args.dry_run,
+            backend=args.backend,
+        )
+        summary = summarize(results)
+        print("\nSUMMARY")
+        for k, v in summary.items():
+            print(f"  {k}: {v}")
+        payload = {"summary": summary, "results": [r.to_dict() for r in results]}
+        out_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        print(f"Wrote {out_path}")
+        combined["modes"][mode] = summary
+        worst_rate = min(worst_rate, float(summary.get("full_rate", 0)))
+
+    if args.mode == "both":
+        Path(args.out).write_text(json.dumps(combined, indent=2), encoding="utf-8")
+        print(f"\nCombined summary → {args.out}")
+        print(f"Worst full_rate across modes: {worst_rate}%")
+
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -254,7 +265,12 @@ def main(argv: list[str] | None = None) -> int:
 
     bench_p = sub.add_parser("bench", help="LLM generation reliability benchmark")
     bench_p.add_argument("--backend", default="auto")
-    bench_p.add_argument("--mode", choices=["text", "json"], default="text")
+    bench_p.add_argument(
+        "--mode",
+        choices=["text", "json", "both"],
+        default="text",
+        help="text recommended for small local models; json AST for stronger LLMs",
+    )
     bench_p.add_argument("--dry-run", action="store_true")
     bench_p.add_argument("--out", default="benchmark_results.json")
     bench_p.set_defaults(func=cmd_bench)
