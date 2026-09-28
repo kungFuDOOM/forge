@@ -63,14 +63,16 @@ from forge_runtime import (
 FORGE_SPEC_BRIEF = """
 Forge is an AI-native agent language (not Python). Emit ONLY Forge.
 
-Skeleton (always this order):
+Skeleton:
   AGENT "name"
   MEMORY { key: value }
   STEP name TOOL tool_name INPUT { k: $var } OUTPUT out_var
   STEP name FILTER field > 0.8 ON $list OUTPUT filtered
   REASON "prompt" ON $var OUTPUT out_var
+  STEP later TOOL write_file INPUT { path: "out.txt", body: $out_var } OUTPUT saved
   VERIFY $var != null
   RETURN { key: $var }
+Note: REASON can appear between STEPs (think then act).
 
 Rules:
 - Keywords UPPERCASE only.

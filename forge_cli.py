@@ -342,6 +342,57 @@ result = executor.invoke({{"input": "..."}})
     return 0
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    """Natural language → Forge → run. The AI-native usage path."""
+    from forge_generate import generate_and_run
+
+    task = " ".join(args.task).strip()
+    if not task:
+        print("Usage: ./forge ask \"your agent task in plain English\"", file=sys.stderr)
+        return 1
+
+    print(f"# ask: {task}")
+    print(f"# backend={args.backend}  mode={args.mode}")
+    try:
+        generate_and_run._live_reason = False  # type: ignore
+        out = generate_and_run(
+            task,
+            backend=args.backend,
+            mode=args.mode,
+            execute=not args.no_run,
+        )
+    except Exception as e:
+        print(_friendly_error(e), file=sys.stderr)
+        print("  tip: ./start_ollama.sh   or set GROQ_API_KEY / GEMINI_API_KEY", file=sys.stderr)
+        return 1
+
+    if args.show_source or not out.get("parse_ok"):
+        print("\n=== generated Forge ===")
+        print(out.get("extracted") or (out.get("raw_response") or "")[:2000])
+
+    print("\n=== status ===")
+    print(f"parse_ok:   {out.get('parse_ok')}")
+    print(f"runtime_ok: {out.get('runtime_ok')}")
+    if out.get("repair"):
+        print(f"repair:     {out['repair']}")
+    if out.get("error"):
+        print(f"error:      {out['error']}")
+    if out.get("result") is not None:
+        print("\n=== result ===")
+        print(json.dumps(out["result"], indent=2, default=str))
+
+    # Optionally save
+    if args.save and out.get("extracted") and out.get("parse_ok"):
+        path = Path(args.save)
+        path.write_text(out["extracted"] if not str(out["extracted"]).lstrip().startswith("{")
+                        else out["extracted"], encoding="utf-8")
+        # If JSON AST, still save — user can run with compile_auto
+        print(f"\nSaved → {path}")
+        print(f"  ./forge run {path} --repair")
+
+    return 0 if out.get("parse_ok") and (args.no_run or out.get("runtime_ok")) else 1
+
+
 def cmd_bench(args: argparse.Namespace) -> int:
     from forge_benchmark import run_benchmark, summarize
 
@@ -377,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(BANNER)
-        print("\nCommands: quickstart · run · check · init · examples · tools · tokens · doctor · repl")
+        print("\nCommands: quickstart · ask · run · check · init · examples · tools · tokens · doctor · repl")
         return 0
 
     p = argparse.ArgumentParser(
@@ -434,6 +485,15 @@ def main(argv: list[str] | None = None) -> int:
 
     doc_p = sub.add_parser("doctor", help="Check setup")
     doc_p.set_defaults(func=cmd_doctor)
+
+    ask_p = sub.add_parser("ask", help="Describe an agent in English → Forge → run")
+    ask_p.add_argument("task", nargs="+", help="Plain-English task description")
+    ask_p.add_argument("--backend", default="auto", help="auto|ollama|openai")
+    ask_p.add_argument("--mode", choices=["text", "json"], default="text")
+    ask_p.add_argument("--no-run", action="store_true", help="Generate only")
+    ask_p.add_argument("--show-source", action="store_true", default=True)
+    ask_p.add_argument("--save", help="Save generated program to a .forge file")
+    ask_p.set_defaults(func=cmd_ask)
 
     bench_p = sub.add_parser("bench", help="LLM generation benchmark")
     bench_p.add_argument("--backend", default="auto")

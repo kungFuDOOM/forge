@@ -112,7 +112,7 @@ class Filter(ASTNode):
 @dataclass
 class Step(ASTNode):
     step_name: str
-    action: Union[ToolCall, Filter]
+    action: Union[ToolCall, Filter, Reason]
     node_type: str = field(default="step")
 
 
@@ -428,8 +428,11 @@ def validate_ast(node: ASTNode, path: str = "program") -> list[str]:
                 errors.append(f"{sp}.action: input_var and output_var required")
             if not isinstance(action.condition, Comparison):
                 errors.append(f"{sp}.action: condition must be comparison")
+        elif isinstance(action, Reason):
+            if not action.prompt or not action.output_var:
+                errors.append(f"{sp}.action: reason requires prompt and output_var")
         else:
-            errors.append(f"{sp}.action: must be tool_call or filter")
+            errors.append(f"{sp}.action: must be tool_call, filter, or reason")
 
     if node.reason is not None:
         if not isinstance(node.reason, Reason):
@@ -695,20 +698,20 @@ class Parser:
         memory = MemoryBlock(entries=mem_entries) if mem_entries else None
 
         steps: list[Step] = []
-        reason = None
 
-        # STEPs, and allow REASON interleaved or as a STEP shorthand
+        # STEPs and interleaved REASON (think → act). Order is preserved.
         while True:
             if self._match_keyword("STEP"):
-                step, maybe_reason = self._parse_step()
-                if maybe_reason is not None:
-                    # REASON emitted as STEP — hoist to program.reason (last wins)
-                    reason = maybe_reason
-                else:
-                    steps.append(step)  # type: ignore
+                steps.append(self._parse_step())
                 continue
             if self._match_keyword("REASON"):
-                reason = self._parse_reason()
+                # Mid-flow REASON becomes a step so later STEPs can use its output.
+                # Trailing REASON (no STEP after) is also stored as program.reason
+                # for backward-compatible AST shape.
+                r = self._parse_reason()
+                steps.append(
+                    Step(step_name=f"reason_{len(steps)+1}", action=r)
+                )
                 continue
             break
 
@@ -736,7 +739,7 @@ class Parser:
             agent=agent,
             memory=memory,
             steps=steps,
-            reason=reason,
+            reason=None,  # REASON runs in-order as steps (no double-exec)
             verify=verify,
             return_stmt=return_stmt,
         )
@@ -790,23 +793,18 @@ class Parser:
         tok = self._cur()
         return tok.type == "KEYWORD" and tok.value in names
 
-    def _parse_step(self):
+    def _parse_step(self) -> Step:
         """
-        Returns (Step, None) for TOOL/FILTER steps.
-        Returns (None, Reason) when AI writes REASON as a STEP:
-          STEP name REASON "prompt" ON $x OUTPUT y
-          STEP name "prompt" ON $x OUTPUT y
+        STEP name TOOL ... | FILTER ... | REASON "..." ON $x OUTPUT y
+        Also: STEP name "prompt" ON $x OUTPUT y  (AI shorthand for REASON)
         """
         self._expect("KEYWORD", "STEP")
         step_name = self._expect("IDENT").value
 
         if self._match_keyword("TOOL"):
-            action = self._parse_tool_call()
-            return Step(step_name=step_name, action=action), None
+            return Step(step_name=step_name, action=self._parse_tool_call())
         if self._match_keyword("FILTER"):
-            action = self._parse_filter()
-            return Step(step_name=step_name, action=action), None
-        # AI-friendly: reason-as-step
+            return Step(step_name=step_name, action=self._parse_filter())
         if self._match_keyword("REASON") or self._cur().type == "STRING":
             if self._match_keyword("REASON"):
                 self._advance()
@@ -816,7 +814,10 @@ class Parser:
             self._expect("KEYWORD", "OUTPUT")
             output_var = self._expect("IDENT").value
             self._skip_optional_annotation()
-            return None, Reason(prompt=prompt, input_var=input_var, output_var=output_var)
+            return Step(
+                step_name=step_name,
+                action=Reason(prompt=prompt, input_var=input_var, output_var=output_var),
+            )
 
         raise ForgeParseError(
             f"Expected TOOL, FILTER, or REASON after STEP name, got {self._cur().value!r} "

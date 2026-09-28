@@ -67,6 +67,7 @@ RETURN { url: $url, summary: $summary }
 ```
 ./forge                  # welcome
 ./forge quickstart       # guided first run
+./forge ask "…"          # English → Forge → run (needs Ollama or API key)
 ./forge run FILE.forge   # execute
 ./forge check FILE.forge # validate
 ./forge init NAME        # new agent (--template basic|http|file)
@@ -76,6 +77,8 @@ RETURN { url: $url, summary: $summary }
 ./forge doctor           # setup check
 ./forge repl             # interactive
 ```
+
+REASON can sit **between** STEPs (think → then act), e.g. write a file from a reasoned report.
 
 Same via `python3 forge_cli.py …`.
 

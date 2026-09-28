@@ -462,6 +462,8 @@ class Evaluator:
             source = self._resolve_var(action.input_var)
             result = self._eval_filter(action.condition, source)
             self.memory[action.output_var] = result
+        elif isinstance(action, Reason):
+            self._eval_reason(action)
         else:
             raise ForgeRuntimeError(f"Unknown step action: {type(action)}")
 

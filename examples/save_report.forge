@@ -7,9 +7,9 @@ MEMORY {
 
 STEP research TOOL web_search INPUT { q: $topic, n: 3 } OUTPUT hits
 
-STEP save TOOL write_file INPUT { path: $out_path, body: $hits } OUTPUT saved
-
 REASON "Write a 3-sentence status report from these notes" ON $hits OUTPUT report
+
+STEP save TOOL write_file INPUT { path: $out_path, body: $report } OUTPUT saved
 
 VERIFY $saved != null
 
