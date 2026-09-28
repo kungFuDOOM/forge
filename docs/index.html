@@ -4,109 +4,401 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Forge — JavaScript for AI</title>
+  <meta name="description" content="Forge is an AI-native programming language for agents. Explicit. Unambiguous. Dual text + JSON AST. Made for how AIs write code." />
+  <meta property="og:title" content="Forge — JavaScript for AI" />
+  <meta property="og:description" content="The agent programming language built for LLMs — not bolted onto Python." />
+  <meta property="og:image" content="https://kungfudoom.github.io/forge/hero-banner.jpg" />
+  <meta property="og:url" content="https://kungfudoom.github.io/forge/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="apple-touch-icon" href="emblem-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #0b0f14;
-      --card: #121821;
-      --text: #e7eef7;
-      --muted: #9aa8b8;
-      --accent: #6ee7b7;
-      --accent2: #38bdf8;
-      --border: #1f2a37;
+      --bg: #05080d;
+      --bg2: #0b1220;
+      --card: rgba(18, 26, 40, 0.72);
+      --text: #f0f6ff;
+      --muted: #93a4b8;
+      --mint: #6ee7b7;
+      --cyan: #38bdf8;
+      --violet: #a78bfa;
+      --border: rgba(110, 231, 183, 0.14);
+      --glow: rgba(56, 189, 248, 0.35);
     }
     * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: radial-gradient(1200px 600px at 20% -10%, #122033 0%, var(--bg) 55%);
+      font-family: Outfit, ui-sans-serif, system-ui, sans-serif;
       color: var(--text);
-      line-height: 1.5;
+      background: var(--bg);
+      line-height: 1.55;
+      overflow-x: hidden;
     }
-    .wrap { max-width: 920px; margin: 0 auto; padding: 48px 20px 80px; }
-    h1 { font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 8px; letter-spacing: -0.03em; }
-    .tag { color: var(--accent); font-weight: 600; }
-    .lead { color: var(--muted); font-size: 1.15rem; max-width: 40rem; }
-    .row { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0 40px; }
-    a.btn {
-      display: inline-block; text-decoration: none; color: #041016;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
-      padding: 10px 16px; border-radius: 10px; font-weight: 700;
+    a { color: inherit; }
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+    /* NAV */
+    .nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: blur(16px);
+      background: rgba(5, 8, 13, 0.75);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
     }
-    a.ghost {
-      display: inline-block; text-decoration: none; color: var(--text);
-      border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px;
+    .nav-inner {
+      max-width: 1100px; margin: 0 auto; padding: 14px 20px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
     }
-    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .brand {
+      display: flex; align-items: center; gap: 12px; text-decoration: none; font-weight: 700;
+    }
+    .brand img {
+      width: 40px; height: 40px; border-radius: 10px;
+      box-shadow: 0 0 24px var(--glow);
+    }
+    .brand span { letter-spacing: -0.02em; }
+    .nav-links { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .nav-links a {
+      text-decoration: none; color: var(--muted); font-size: 0.92rem; padding: 8px 12px; border-radius: 999px;
+    }
+    .nav-links a:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+    .nav-cta {
+      background: linear-gradient(90deg, var(--mint), var(--cyan)) !important;
+      color: #041016 !important; font-weight: 700 !important;
+    }
+
+    /* HERO */
+    .hero {
+      position: relative;
+      min-height: min(88vh, 860px);
+      display: flex; align-items: center;
+      isolation: isolate;
+    }
+    .hero-bg {
+      position: absolute; inset: 0; z-index: -2;
+      background:
+        radial-gradient(900px 500px at 70% 20%, rgba(56,189,248,0.18), transparent 60%),
+        radial-gradient(700px 420px at 15% 80%, rgba(110,231,183,0.12), transparent 55%),
+        linear-gradient(180deg, #071018 0%, var(--bg) 100%);
+    }
+    .hero-banner {
+      position: absolute; inset: 0; z-index: -1; opacity: 0.28;
+      background: url("hero-banner.jpg") center / cover no-repeat;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,0.85), transparent 85%);
+      -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,0.85), transparent 85%);
+    }
+    .hero-inner {
+      max-width: 1100px; margin: 0 auto; padding: 64px 20px 48px;
+      display: grid; gap: 40px;
+      grid-template-columns: 1.15fr 0.85fr;
+      align-items: center;
+    }
+    @media (max-width: 860px) {
+      .hero-inner { grid-template-columns: 1fr; text-align: center; }
+      .hero-copy .row { justify-content: center; }
+      .hero-copy .lead { margin-left: auto; margin-right: auto; }
+      .emblem-wrap { order: -1; }
+    }
+    .kicker {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 0.85rem; font-weight: 600; color: var(--mint);
+      border: 1px solid var(--border); background: rgba(110,231,183,0.06);
+      padding: 6px 12px; border-radius: 999px; margin-bottom: 18px;
+    }
+    .kicker i {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--mint); box-shadow: 0 0 12px var(--mint);
+      display: inline-block;
+    }
+    h1 {
+      font-size: clamp(2.6rem, 6vw, 4.4rem);
+      line-height: 1.02; letter-spacing: -0.045em; margin: 0 0 16px;
+    }
+    h1 .grad {
+      background: linear-gradient(90deg, var(--mint), var(--cyan), var(--violet));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .lead {
+      color: var(--muted); font-size: 1.15rem; max-width: 34rem; margin: 0 0 28px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      text-decoration: none; border-radius: 12px; padding: 12px 18px; font-weight: 700;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary {
+      color: #041016;
+      background: linear-gradient(90deg, var(--mint), var(--cyan));
+      box-shadow: 0 10px 40px rgba(56,189,248,0.25);
+    }
+    .btn-ghost {
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.03);
+    }
+    .mini-stats {
+      display: flex; flex-wrap: wrap; gap: 18px;
+      color: var(--muted); font-size: 0.9rem;
+    }
+    .mini-stats strong { color: var(--text); display: block; font-size: 1.05rem; }
+
+    .emblem-wrap {
+      display: flex; justify-content: center; align-items: center;
+      position: relative;
+    }
+    .emblem-ring {
+      position: absolute; width: min(360px, 78vw); height: min(360px, 78vw);
+      border-radius: 50%;
+      background: conic-gradient(from 180deg, transparent, rgba(56,189,248,0.35), rgba(110,231,183,0.35), transparent);
+      filter: blur(18px); opacity: 0.7; animation: spin 12s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .emblem {
+      width: min(320px, 72vw); height: auto; border-radius: 28px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow:
+        0 0 0 1px rgba(110,231,183,0.08),
+        0 30px 80px rgba(0,0,0,0.55),
+        0 0 60px rgba(56,189,248,0.2);
+      position: relative; z-index: 1;
+      background: #0a0f16;
+    }
+
+    /* SECTIONS */
+    section { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
+    .section-title {
+      font-size: clamp(1.6rem, 3vw, 2.2rem); letter-spacing: -0.03em; margin: 0 0 10px;
+    }
+    .section-sub { color: var(--muted); margin: 0 0 28px; max-width: 40rem; }
+
+    .grid3 {
+      display: grid; gap: 16px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    @media (max-width: 800px) { .grid3 { grid-template-columns: 1fr; } }
     .card {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: 14px; padding: 18px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px; padding: 22px;
+      backdrop-filter: blur(10px);
+      transition: border-color 0.15s ease, transform 0.15s ease;
     }
-    .card h3 { margin: 0 0 8px; font-size: 1.05rem; }
+    .card:hover { border-color: rgba(56,189,248,0.35); transform: translateY(-2px); }
+    .card .icon {
+      width: 42px; height: 42px; border-radius: 12px;
+      display: grid; place-items: center; margin-bottom: 14px;
+      background: linear-gradient(135deg, rgba(110,231,183,0.15), rgba(56,189,248,0.15));
+      border: 1px solid var(--border);
+      font-size: 1.2rem;
+    }
+    .card h3 { margin: 0 0 8px; font-size: 1.1rem; }
     .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
-    pre {
-      background: #0a1018; border: 1px solid var(--border); border-radius: 14px;
-      padding: 16px; overflow: auto; font-size: 0.85rem; line-height: 1.45;
+
+    .split {
+      display: grid; gap: 20px; grid-template-columns: 1fr 1fr; align-items: stretch;
     }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .muted { color: var(--muted); }
-    footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; }
+    @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+
+    pre, .code {
+      background: #070b12;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 18px;
+      overflow: auto;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 0;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .kw { color: var(--mint); font-weight: 600; }
+    .str { color: #fbbf24; }
+    .var { color: var(--cyan); }
+    .cmt { color: #64748b; }
+
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .pill {
+      font-size: 0.78rem; color: var(--muted);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 5px 10px;
+    }
+
+    .cta-band {
+      margin: 20px auto 80px; max-width: 1100px; padding: 0 20px;
+    }
+    .cta-inner {
+      border-radius: 24px; padding: 36px 28px;
+      background:
+        radial-gradient(600px 200px at 10% 0%, rgba(110,231,183,0.18), transparent 50%),
+        radial-gradient(600px 200px at 90% 100%, rgba(56,189,248,0.16), transparent 50%),
+        linear-gradient(180deg, #101826, #0a1220);
+      border: 1px solid var(--border);
+      display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between;
+    }
+    .cta-inner h2 { margin: 0 0 6px; font-size: 1.7rem; letter-spacing: -0.03em; }
+    .cta-inner p { margin: 0; color: var(--muted); }
+
+    footer {
+      border-top: 1px solid rgba(255,255,255,0.06);
+      padding: 28px 20px 48px; color: var(--muted); font-size: 0.9rem;
+    }
+    .foot-inner {
+      max-width: 1100px; margin: 0 auto;
+      display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center;
+    }
+    .foot-brand { display: flex; align-items: center; gap: 10px; }
+    .foot-brand img { width: 28px; height: 28px; border-radius: 8px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <p class="tag">Forge</p>
-    <h1>JavaScript for AI</h1>
-    <p class="lead">
-      An agent programming language made for how AIs generate code —
-      explicit, unambiguous, dual text + JSON AST.
-      Not another Python framework.
+  <nav class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="./">
+        <img src="emblem.jpg" alt="Forge emblem" />
+        <span>Forge</span>
+      </a>
+      <div class="nav-links">
+        <a href="#why">Why</a>
+        <a href="#code">Language</a>
+        <a href="#start">Start</a>
+        <a class="nav-cta" href="https://github.com/kungFuDOOM/forge">Star on GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="hero-bg"></div>
+    <div class="hero-banner" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <div class="kicker"><i></i> AI-native agent language</div>
+        <h1>JavaScript<br /><span class="grad">for AI</span></h1>
+        <p class="lead">
+          Forge is a programming language built for how models generate code —
+          explicit, unambiguous, dual text + JSON AST.
+          Not another Python agent framework.
+        </p>
+        <div class="row">
+          <a class="btn btn-primary" href="https://github.com/kungFuDOOM/forge">Get the code</a>
+          <a class="btn btn-ghost" href="#start">60-second start</a>
+        </div>
+        <div class="mini-stats">
+          <div><strong>AGENT → RETURN</strong>the whole program</div>
+          <div><strong>Text + JSON AST</strong>same semantics</div>
+          <div><strong>./forge ask</strong>English → run</div>
+        </div>
+      </div>
+      <div class="emblem-wrap">
+        <div class="emblem-ring" aria-hidden="true"></div>
+        <img class="emblem" src="emblem.jpg" alt="Forge emblem — anvil with neon forge beam" />
+      </div>
+    </div>
+  </header>
+
+  <section id="why">
+    <h2 class="section-title">Why Forge exists</h2>
+    <p class="section-sub">
+      Humans built Python and JavaScript for humans. Agents forced into those languages
+      fight syntax, precedence, and framework glue. Forge is the agent loop as a language.
     </p>
-    <div class="row">
-      <a class="btn" href="https://github.com/kungFuDOOM/forge">GitHub</a>
-      <a class="ghost" href="https://github.com/kungFuDOOM/forge#new-user--60-seconds">Quickstart</a>
-    </div>
-
-    <div class="grid">
+    <div class="grid3">
       <div class="card">
-        <h3>Usable</h3>
-        <p><code>./forge quickstart</code> — run a demo, create your first agent, in under a minute.</p>
+        <div class="icon">⚡</div>
+        <h3>Made for AI emission</h3>
+        <p>Uppercase keywords, <code class="mono">$variables</code>, no precedence surprises. LLMs pattern-match it cleanly.</p>
       </div>
       <div class="card">
-        <h3>Useful</h3>
-        <p>Real tools: <code>http_get</code>, <code>read_file</code>, <code>write_file</code> — plus search/sales mocks.</p>
+        <div class="icon">🧬</div>
+        <h3>Dual representation</h3>
+        <p>Write text syntax — or emit a JSON AST and skip parsing entirely. Same nodes. Same runtime.</p>
       </div>
       <div class="card">
-        <h3>AI-native</h3>
-        <p>LLMs emit Forge (or JSON AST). Repair → validate → run. Fewer retries than Python glue.</p>
+        <div class="icon">🛠</div>
+        <h3>Real tools included</h3>
+        <p><code class="mono">http_get</code>, <code class="mono">read_file</code>, <code class="mono">write_file</code>, search &amp; sales mocks — run useful agents today.</p>
       </div>
     </div>
+  </section>
 
-    <h2 style="margin-top:40px">A complete program</h2>
-    <pre><code>AGENT "url-fetcher"
+  <section id="code">
+    <h2 class="section-title">A complete agent program</h2>
+    <p class="section-sub">Think → act → verify → return. REASON can sit between STEPs.</p>
+    <div class="split">
+      <pre class="mono" aria-label="Forge example program"><span class="kw">AGENT</span> <span class="str">"url-fetcher"</span>
 
-MEMORY {
-  url: "https://example.com"
+<span class="kw">MEMORY</span> {
+  url: <span class="str">"https://example.com"</span>
 }
 
-STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
+<span class="kw">STEP</span> fetch <span class="kw">TOOL</span> http_get <span class="kw">INPUT</span> { url: <span class="var">$url</span> } <span class="kw">OUTPUT</span> page
 
-REASON "In one sentence, what is this page about?" ON $page OUTPUT summary
+<span class="kw">REASON</span> <span class="str">"What is this page about?"</span> <span class="kw">ON</span> <span class="var">$page</span> <span class="kw">OUTPUT</span> summary
 
-VERIFY $page != null
+<span class="kw">VERIFY</span> <span class="var">$page</span> != null
 
-RETURN { url: $url, summary: $summary }</code></pre>
+<span class="kw">RETURN</span> { url: <span class="var">$url</span>, summary: <span class="var">$summary</span> }</pre>
+      <div class="card">
+        <h3>Primitives, not libraries</h3>
+        <p>The language <em>is</em> the agent workflow.</p>
+        <div class="pill-row">
+          <span class="pill mono">AGENT</span>
+          <span class="pill mono">MEMORY</span>
+          <span class="pill mono">STEP</span>
+          <span class="pill mono">TOOL</span>
+          <span class="pill mono">FILTER</span>
+          <span class="pill mono">REASON</span>
+          <span class="pill mono">VERIFY</span>
+          <span class="pill mono">RETURN</span>
+        </div>
+        <p style="margin-top:18px;color:var(--muted)">
+          Pipeline: <strong style="color:var(--text)">emit → repair → validate → run</strong>
+        </p>
+        <div class="row" style="margin-top:22px;margin-bottom:0">
+          <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge/blob/main/VISION.md">Read the vision</a>
+        </div>
+      </div>
+    </div>
+  </section>
 
-    <h2>Install &amp; run</h2>
-    <pre><code>git clone https://github.com/kungFuDOOM/forge.git
+  <section id="start">
+    <h2 class="section-title">Start in 60 seconds</h2>
+    <p class="section-sub">No API key needed for demos. Optional Ollama for <span class="mono">./forge ask</span>.</p>
+    <pre class="mono"><span class="cmt"># clone &amp; go</span>
+git clone https://github.com/kungFuDOOM/forge.git
 cd forge
+chmod +x forge
+
 ./forge quickstart
 ./forge run examples/url_fetcher.forge
 ./forge run examples/file_summarizer.forge
-./forge ask "Add 3 and 9 and return the total"   # needs Ollama or API key</code></pre>
+./forge ask <span class="str">"Add 3 and 9 and return the total"</span></pre>
+  </section>
 
-    <footer>
-      Vision: SQL for AI agents. Human holds the vision; AI builds the language.
-    </footer>
+  <div class="cta-band">
+    <div class="cta-inner">
+      <div>
+        <h2>Forge the native tongue for agents</h2>
+        <p>Open source · MIT · built in the open</p>
+      </div>
+      <div class="row" style="margin:0">
+        <a class="btn btn-primary" href="https://github.com/kungFuDOOM/forge">Open repository</a>
+        <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge#commands">CLI reference</a>
+      </div>
+    </div>
   </div>
+
+  <footer>
+    <div class="foot-inner">
+      <div class="foot-brand">
+        <img src="emblem.jpg" alt="" />
+        <span>Forge — JavaScript for AI</span>
+      </div>
+      <div>Human holds the vision. AI builds the language.</div>
+    </div>
+  </footer>
 </body>
 </html>
