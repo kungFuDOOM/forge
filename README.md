@@ -68,6 +68,7 @@ RETURN { url: $url, summary: $summary }
 ./forge                  # welcome
 ./forge quickstart       # guided first run
 ./forge ask "…"          # English → Forge → run (needs Ollama or API key)
+./forge credit-test      # live Forge vs Python token/credit comparison
 ./forge run FILE.forge   # execute
 ./forge check FILE.forge # validate
 ./forge init NAME        # new agent (--template basic|http|file)

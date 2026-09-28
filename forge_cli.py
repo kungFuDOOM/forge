@@ -342,6 +342,19 @@ result = executor.invoke({{"input": "..."}})
     return 0
 
 
+def cmd_credit_test(args: argparse.Namespace) -> int:
+    from forge_credit_test import main as credit_main
+
+    argv = ["--backend", args.backend, "--tasks", str(args.tasks), "--out", args.out]
+    if args.model:
+        argv += ["--model", args.model]
+    if args.price_in is not None:
+        argv += ["--price-in", str(args.price_in)]
+    if args.price_out is not None:
+        argv += ["--price-out", str(args.price_out)]
+    return credit_main(argv)
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """Natural language → Forge → run. The AI-native usage path."""
     from forge_generate import generate_and_run
@@ -428,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(BANNER)
-        print("\nCommands: quickstart · ask · run · check · init · examples · tools · tokens · doctor · repl")
+        print("\nCommands: quickstart · ask · credit-test · run · check · init · examples · tools · tokens · doctor · repl")
         return 0
 
     p = argparse.ArgumentParser(
@@ -494,6 +507,18 @@ def main(argv: list[str] | None = None) -> int:
     ask_p.add_argument("--show-source", action="store_true", default=True)
     ask_p.add_argument("--save", help="Save generated program to a .forge file")
     ask_p.set_defaults(func=cmd_ask)
+
+    cred_p = sub.add_parser(
+        "credit-test",
+        help="Live Forge vs Python token/credit comparison (same tasks, same model)",
+    )
+    cred_p.add_argument("--backend", default="auto")
+    cred_p.add_argument("--model", default=None)
+    cred_p.add_argument("--tasks", type=int, default=5)
+    cred_p.add_argument("--price-in", type=float, default=None)
+    cred_p.add_argument("--price-out", type=float, default=None)
+    cred_p.add_argument("--out", default="credit_test_results.json")
+    cred_p.set_defaults(func=cmd_credit_test)
 
     bench_p = sub.add_parser("bench", help="LLM generation benchmark")
     bench_p.add_argument("--backend", default="auto")
