@@ -352,6 +352,10 @@ def cmd_credit_test(args: argparse.Namespace) -> int:
         argv += ["--price-in", str(args.price_in)]
     if args.price_out is not None:
         argv += ["--price-out", str(args.price_out)]
+    if getattr(args, "lean", False):
+        argv.append("--lean")
+    if getattr(args, "retries", None):
+        argv += ["--retries", str(args.retries)]
     return credit_main(argv)
 
 
@@ -518,6 +522,17 @@ def main(argv: list[str] | None = None) -> int:
     cred_p.add_argument("--price-in", type=float, default=None)
     cred_p.add_argument("--price-out", type=float, default=None)
     cred_p.add_argument("--out", default="credit_test_results.json")
+    cred_p.add_argument(
+        "--lean",
+        action="store_true",
+        help="Minimal prompts (steady-state language density, no teach tax)",
+    )
+    cred_p.add_argument(
+        "--retries",
+        type=int,
+        default=1,
+        help="Max attempts per leg; charges all tries (default 1)",
+    )
     cred_p.set_defaults(func=cmd_credit_test)
 
     bench_p = sub.add_parser("bench", help="LLM generation benchmark")

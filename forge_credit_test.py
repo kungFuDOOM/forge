@@ -30,7 +30,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
-from forge_benchmark import FORGE_SPEC_BRIEF, FEW_SHOT, BENCHMARK_TASKS, extract_code
+from forge_benchmark import BENCHMARK_TASKS, extract_code
 from forge_repair import try_compile_repaired
 from forge_runtime import Evaluator, MockLLMClient, ToolRegistry, ollama_available
 
@@ -55,6 +55,9 @@ class LegResult:
     elapsed_s: float
     error: Optional[str] = None
     preview: str = ""
+    attempts: int = 1
+    hit_cap: bool = False
+    code_tokens: int = 0  # extracted program density (chars//4)
 
 
 @dataclass
@@ -84,6 +87,14 @@ class SuiteSummary:
     python_est_usd: float
     token_savings_pct: float
     usd_savings_pct: float
+    forge_code_tokens: int = 0
+    python_code_tokens: int = 0
+    code_density_savings_pct: float = 0.0
+    forge_hit_cap: int = 0
+    python_hit_cap: int = 0
+    lean: bool = False
+    max_attempts: int = 1
+    diagnosis: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -95,6 +106,23 @@ def est_usd(prompt_tok: int, completion_tok: int, pin: float, pout: float) -> fl
 # Prompts
 # =============================================================================
 
+# Credit-test Forge spec — kept at ~Python teach cost (the old FORGE_SPEC_BRIEF
+# was ~50% larger and alone erased language-density wins).
+FORGE_CREDIT_SPEC = """
+Forge agent language. Emit ONLY Forge. Keywords UPPERCASE. Vars $name.
+
+AGENT "name"
+MEMORY { key: value }
+STEP n TOOL tool INPUT { k: $v } OUTPUT out
+STEP n FILTER field > 0.8 ON $list OUTPUT filtered
+REASON "prompt" ON $var OUTPUT out
+VERIFY $var != null
+RETURN { key: $var }
+
+Tools: arithmetic_add, web_search, get_value, sales_data.
+Stop immediately after the RETURN line. No markdown. No second AGENT.
+""".strip()
+
 PYTHON_SPEC = """
 You write a single Python function for an agent task.
 Rules:
@@ -104,11 +132,9 @@ Rules:
   web_search({q,n}) -> list
   get_value({}) -> number
   sales_data({region,period}) -> list
-  http_get({url}) -> dict
-  read_file({path}) -> dict
-  write_file({path,body}) -> dict
 - For reasoning use: llm.complete(prompt, context=data) -> str
 - No imports. No classes. No markdown. Return a dict.
+- Solve THIS task (do not copy the example's numbers).
 """.strip()
 
 PYTHON_FEW_SHOT = '''
@@ -122,25 +148,44 @@ def run(tools, llm):
     return {"result": total, "note": note}
 '''.strip()
 
+FORGE_FEW_SHOT_CODE = '''
+AGENT "basic-calculator"
+MEMORY { a: 15 b: 7 }
+STEP add TOOL arithmetic_add INPUT { x: $a, y: $b } OUTPUT sum
+REASON "Explain what the sum represents in a short sentence" ON $sum OUTPUT explanation
+VERIFY $sum > 0
+RETURN { result: $sum, note: $explanation }
+'''.strip()
 
-def forge_prompt(task: str) -> str:
-    shots = FEW_SHOT[:1]
-    parts = [
-        "Forge = AI-native agent language. Emit ONLY Forge code.",
-        FORGE_SPEC_BRIEF,
+
+def forge_prompt(task: str, *, lean: bool = False) -> str:
+    """lean=True: minimal teach (steady-state / model already knows Forge)."""
+    if lean:
+        return "\n".join([
+            "Emit ONLY a Forge program for this task.",
+            "First character must be A of AGENT. Stop after RETURN. No markdown fences.",
+            task,
+        ])
+    return "\n".join([
+        FORGE_CREDIT_SPEC,
         "",
-        "Example:",
-        f"Task: {shots[0][0]}",
-        shots[0][1],
+        "Example (copy this shape, change the values for the task):",
+        "Task: Add a=15 and b=7, explain briefly, verify > 0, return result + note.",
+        FORGE_FEW_SHOT_CODE,
         "",
         "Your task:",
         task,
-        "Write a complete Forge program. Stop after RETURN. No markdown.",
-    ]
-    return "\n".join(parts)
+        "Reply with Forge only. First line must be: AGENT \"...\"",
+        "Stop after RETURN. Do not wrap in ``` fences.",
+    ])
 
 
-def python_prompt(task: str) -> str:
+def python_prompt(task: str, *, lean: bool = False) -> str:
+    if lean:
+        return "\n".join([
+            "Emit ONLY def run(tools, llm) -> dict for this task. No markdown.",
+            task,
+        ])
     return "\n".join([
         PYTHON_SPEC,
         "",
@@ -157,8 +202,26 @@ def python_prompt(task: str) -> str:
 # LLM call with usage
 # =============================================================================
 
-def call_ollama(prompt: str, model: str, num_predict: int = 350) -> tuple[str, dict]:
+# Valid Forge programs are ~40–120 tokens. Cap + stop kill runaway babble that
+# previously burned 350 completion tokens and hid the density win.
+FORGE_NUM_PREDICT = 180
+PYTHON_NUM_PREDICT = 220
+# Stop only on clear "done / started over" markers. Avoid bare ``` — tiny models
+# often open a fence and an over-eager stop yields 4-token garbage "savings".
+FORGE_STOP = ["\nAGENT \"", "\n\n\n"]
+PYTHON_STOP = ["\n\ndef run", "\n\n\n"]
+
+
+def call_ollama(
+    prompt: str,
+    model: str,
+    num_predict: int = 220,
+    stop: Optional[list[str]] = None,
+) -> tuple[str, dict]:
     host = (os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
+    options: dict[str, Any] = {"temperature": 0.1, "num_predict": num_predict}
+    if stop:
+        options["stop"] = stop
     body = json.dumps({
         "model": model,
         "stream": False,
@@ -166,7 +229,7 @@ def call_ollama(prompt: str, model: str, num_predict: int = 350) -> tuple[str, d
             {"role": "system", "content": "You generate only code. No explanation."},
             {"role": "user", "content": prompt},
         ],
-        "options": {"temperature": 0.1, "num_predict": num_predict},
+        "options": options,
     }).encode()
     req = urllib.request.Request(
         f"{host}/api/chat",
@@ -189,10 +252,16 @@ def call_ollama(prompt: str, model: str, num_predict: int = 350) -> tuple[str, d
         "completion_tokens": completion_tok,
         "total_tokens": prompt_tok + completion_tok,
         "elapsed_s": round(elapsed, 3),
+        "hit_cap": completion_tok >= num_predict,
     }
 
 
-def call_openai_compat(prompt: str, model: Optional[str] = None) -> tuple[str, dict]:
+def call_openai_compat(
+    prompt: str,
+    model: Optional[str] = None,
+    num_predict: int = 220,
+    stop: Optional[list[str]] = None,
+) -> tuple[str, dict]:
     from forge_runtime import _resolve_openai_compat
     from openai import OpenAI
 
@@ -203,15 +272,19 @@ def call_openai_compat(prompt: str, model: Optional[str] = None) -> tuple[str, d
     if base_url:
         kwargs["base_url"] = base_url
     client = OpenAI(**kwargs)
-    t0 = time.time()
-    resp = client.chat.completions.create(
-        model=resolved,
-        messages=[
+    create_kwargs: dict[str, Any] = {
+        "model": resolved,
+        "messages": [
             {"role": "system", "content": "You generate only code. No explanation."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.1,
-    )
+        "temperature": 0.1,
+        "max_tokens": num_predict,
+    }
+    if stop:
+        create_kwargs["stop"] = stop
+    t0 = time.time()
+    resp = client.chat.completions.create(**create_kwargs)
     elapsed = time.time() - t0
     text = resp.choices[0].message.content or ""
     usage = resp.usage
@@ -225,17 +298,33 @@ def call_openai_compat(prompt: str, model: Optional[str] = None) -> tuple[str, d
         "completion_tokens": completion_tok,
         "total_tokens": prompt_tok + completion_tok,
         "elapsed_s": round(elapsed, 3),
+        "hit_cap": completion_tok >= num_predict,
     }
 
 
-def call_llm(prompt: str, backend: str, model: Optional[str] = None) -> tuple[str, dict]:
+def call_llm(
+    prompt: str,
+    backend: str,
+    model: Optional[str] = None,
+    *,
+    lang: str = "forge",
+) -> tuple[str, dict]:
     backend = backend.lower()
     if backend == "auto":
         backend = "ollama" if ollama_available() else "openai"
+    if lang == "forge":
+        num_predict, stop = FORGE_NUM_PREDICT, FORGE_STOP
+    else:
+        num_predict, stop = PYTHON_NUM_PREDICT, PYTHON_STOP
     if backend == "ollama":
         model = model or os.environ.get("OLLAMA_MODEL") or "llama3.2:1b"
-        return call_ollama(prompt, model=model)
-    return call_openai_compat(prompt, model=model)
+        return call_ollama(prompt, model=model, num_predict=num_predict, stop=stop)
+    return call_openai_compat(prompt, model=model, num_predict=num_predict, stop=stop)
+
+
+def code_token_estimate(text: str) -> int:
+    """Rough token estimate for extracted program body (language density)."""
+    return max(1, len(text) // 4)
 
 
 # =============================================================================
@@ -301,6 +390,66 @@ def eval_python(text: str) -> tuple[bool, Optional[str], str]:
 # Suite
 # =============================================================================
 
+def _run_leg(
+    *,
+    tid: str,
+    desc: str,
+    lang: str,
+    backend: str,
+    model: Optional[str],
+    lean: bool,
+    max_attempts: int,
+) -> LegResult:
+    """Generate + eval one language leg, optionally retrying until success."""
+    prompt_fn = forge_prompt if lang == "forge" else python_prompt
+    eval_fn = eval_forge if lang == "forge" else eval_python
+    prompt = prompt_fn(desc, lean=lean)
+
+    total_in = total_out = 0
+    elapsed = 0.0
+    hit_cap = False
+    ok = False
+    err: Optional[str] = "no attempt"
+    code = ""
+    attempts = 0
+
+    for attempt in range(1, max_attempts + 1):
+        attempts = attempt
+        try:
+            text, usage = call_llm(prompt, backend=backend, model=model, lang=lang)
+            ok, err, code = eval_fn(text)
+        except Exception as e:
+            text, usage = "", {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "elapsed_s": 0,
+                "hit_cap": False,
+            }
+            ok, err, code = False, str(e), ""
+        total_in += int(usage.get("prompt_tokens", 0))
+        total_out += int(usage.get("completion_tokens", 0))
+        elapsed += float(usage.get("elapsed_s", 0))
+        hit_cap = hit_cap or bool(usage.get("hit_cap"))
+        if ok:
+            break
+
+    return LegResult(
+        task_id=tid,
+        lang=lang,
+        success=ok,
+        prompt_tokens=total_in,
+        completion_tokens=total_out,
+        total_tokens=total_in + total_out,
+        elapsed_s=round(elapsed, 3),
+        error=err,
+        preview=(code or "")[:180].replace("\n", " "),
+        attempts=attempts,
+        hit_cap=hit_cap,
+        code_tokens=code_token_estimate(code) if code else 0,
+    )
+
+
 def run_credit_test(
     backend: str = "auto",
     tasks: Optional[list[dict]] = None,
@@ -308,6 +457,8 @@ def run_credit_test(
     model: Optional[str] = None,
     price_in: float = DEFAULT_INPUT_PER_M,
     price_out: float = DEFAULT_OUTPUT_PER_M,
+    lean: bool = False,
+    max_attempts: int = 1,
 ) -> tuple[list[TaskCompare], SuiteSummary]:
     tasks = list(tasks or BENCHMARK_TASKS)
     if limit:
@@ -320,58 +471,26 @@ def run_credit_test(
         desc = task["description"]
         print(f"\n--- {tid} ---")
 
-        # Forge leg
-        fp = forge_prompt(desc)
-        try:
-            f_text, f_usage = call_llm(fp, backend=backend, model=model)
-            f_ok, f_err, f_code = eval_forge(f_text)
-        except Exception as e:
-            f_text, f_usage = "", {
-                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "elapsed_s": 0,
-            }
-            f_ok, f_err, f_code = False, str(e), ""
-        forge_leg = LegResult(
-            task_id=tid,
-            lang="forge",
-            success=f_ok,
-            prompt_tokens=int(f_usage.get("prompt_tokens", 0)),
-            completion_tokens=int(f_usage.get("completion_tokens", 0)),
-            total_tokens=int(f_usage.get("total_tokens", 0)),
-            elapsed_s=float(f_usage.get("elapsed_s", 0)),
-            error=f_err,
-            preview=(f_code or f_text)[:180].replace("\n", " "),
+        forge_leg = _run_leg(
+            tid=tid, desc=desc, lang="forge", backend=backend, model=model,
+            lean=lean, max_attempts=max_attempts,
         )
         print(
-            f"  FORGE   ok={f_ok}  tokens={forge_leg.total_tokens} "
+            f"  FORGE   ok={forge_leg.success}  tokens={forge_leg.total_tokens} "
             f"(in={forge_leg.prompt_tokens} out={forge_leg.completion_tokens}) "
-            f"err={f_err}"
+            f"code~{forge_leg.code_tokens}t  attempts={forge_leg.attempts}"
+            f"{'  HIT_CAP' if forge_leg.hit_cap else ''}  err={forge_leg.error}"
         )
 
-        # Python leg
-        pp = python_prompt(desc)
-        try:
-            p_text, p_usage = call_llm(pp, backend=backend, model=model)
-            p_ok, p_err, p_code = eval_python(p_text)
-        except Exception as e:
-            p_text, p_usage = "", {
-                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "elapsed_s": 0,
-            }
-            p_ok, p_err, p_code = False, str(e), ""
-        py_leg = LegResult(
-            task_id=tid,
-            lang="python",
-            success=p_ok,
-            prompt_tokens=int(p_usage.get("prompt_tokens", 0)),
-            completion_tokens=int(p_usage.get("completion_tokens", 0)),
-            total_tokens=int(p_usage.get("total_tokens", 0)),
-            elapsed_s=float(p_usage.get("elapsed_s", 0)),
-            error=p_err,
-            preview=(p_code or p_text)[:180].replace("\n", " "),
+        py_leg = _run_leg(
+            tid=tid, desc=desc, lang="python", backend=backend, model=model,
+            lean=lean, max_attempts=max_attempts,
         )
         print(
-            f"  PYTHON  ok={p_ok}  tokens={py_leg.total_tokens} "
+            f"  PYTHON  ok={py_leg.success}  tokens={py_leg.total_tokens} "
             f"(in={py_leg.prompt_tokens} out={py_leg.completion_tokens}) "
-            f"err={p_err}"
+            f"code~{py_leg.code_tokens}t  attempts={py_leg.attempts}"
+            f"{'  HIT_CAP' if py_leg.hit_cap else ''}  err={py_leg.error}"
         )
 
         compares.append(TaskCompare(task_id=tid, description=desc, forge=forge_leg, python=py_leg))
@@ -382,13 +501,52 @@ def run_credit_test(
     p_in = sum(c.python.prompt_tokens for c in compares)
     f_out = sum(c.forge.completion_tokens for c in compares)
     p_out = sum(c.python.completion_tokens for c in compares)
+    f_ok_n = sum(1 for c in compares if c.forge.success)
+    p_ok_n = sum(1 for c in compares if c.python.success)
+    f_code = sum(c.forge.code_tokens for c in compares if c.forge.success)
+    p_code = sum(c.python.code_tokens for c in compares if c.python.success)
+    f_code_avg = round(f_code / f_ok_n) if f_ok_n else 0
+    p_code_avg = round(p_code / p_ok_n) if p_ok_n else 0
     f_usd = est_usd(f_in, f_out, price_in, price_out)
     p_usd = est_usd(p_in, p_out, price_in, price_out)
 
+    diagnosis: list[str] = []
+    if f_in > p_in:
+        diagnosis.append(
+            f"Prompt teach tax: Forge prompts used {f_in - p_in} more input tokens "
+            f"({100 * (f_in / p_in - 1):.0f}% heavier). Amortizes once the model knows Forge."
+        )
+    elif p_in > f_in:
+        diagnosis.append(
+            f"Prompt: Forge prompts used {p_in - f_in} fewer input tokens than Python."
+        )
+    if f_out > p_out:
+        diagnosis.append(
+            f"Completion: Forge emitted {f_out - p_out} more output tokens. "
+            "Check HIT_CAP rows — runaway babble past RETURN hides density wins."
+        )
+    elif p_out > f_out:
+        diagnosis.append(
+            f"Completion win: Forge used {p_out - f_out} fewer output tokens "
+            "(the language-density thesis)."
+        )
+    if f_code_avg and p_code_avg:
+        dens = 100.0 * (1 - f_code_avg / p_code_avg)
+        diagnosis.append(
+            f"Avg extracted-program size: Forge ~{f_code_avg}t vs Python ~{p_code_avg}t "
+            f"({dens:+.0f}% — positive means Forge programs are smaller)."
+        )
+    f_ok, p_ok = f_ok_n, p_ok_n
+    if f_ok != p_ok:
+        diagnosis.append(
+            f"Reliability: Forge {f_ok}/{len(compares)} vs Python {p_ok}/{len(compares)} "
+            f"(max {max_attempts} attempt(s) each). Failed tries are included in token totals."
+        )
+
     summary = SuiteSummary(
         tasks=len(compares),
-        forge_success=sum(1 for c in compares if c.forge.success),
-        python_success=sum(1 for c in compares if c.python.success),
+        forge_success=f_ok,
+        python_success=p_ok,
         forge_tokens=f_tok,
         python_tokens=p_tok,
         forge_prompt=f_in,
@@ -399,10 +557,30 @@ def run_credit_test(
         python_est_usd=round(p_usd, 6),
         token_savings_pct=round(100.0 * (1 - f_tok / p_tok), 1) if p_tok else 0.0,
         usd_savings_pct=round(100.0 * (1 - f_usd / p_usd), 1) if p_usd else 0.0,
+        forge_code_tokens=f_code_avg,
+        python_code_tokens=p_code_avg,
+        code_density_savings_pct=(
+            round(100.0 * (1 - f_code_avg / p_code_avg), 1) if p_code_avg else 0.0
+        ),
+        forge_hit_cap=sum(1 for c in compares if c.forge.hit_cap),
+        python_hit_cap=sum(1 for c in compares if c.python.hit_cap),
+        lean=lean,
+        max_attempts=max_attempts,
+        diagnosis=diagnosis,
         notes=[
             f"Price assumption: ${price_in}/1M input, ${price_out}/1M output tokens.",
             "Ollama reports real token counts but $0 billed locally.",
-            "Success = first-try runnable with mock tools (no retries charged).",
+            (
+                f"Success = runnable with mock tools; attempts charged up to {max_attempts}."
+                if max_attempts > 1
+                else "Success = first-try runnable with mock tools (use --retries N to charge retries)."
+            ),
+            (
+                "Mode=lean: minimal prompts (steady-state language density)."
+                if lean
+                else "Mode=cold: full few-shot teach (includes language-teach tax)."
+            ),
+            f"Forge num_predict={FORGE_NUM_PREDICT} with stop sequences; Python={PYTHON_NUM_PREDICT}.",
         ],
     )
     return compares, summary
@@ -416,6 +594,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--price-in", type=float, default=DEFAULT_INPUT_PER_M)
     ap.add_argument("--price-out", type=float, default=DEFAULT_OUTPUT_PER_M)
     ap.add_argument("--out", default="credit_test_results.json")
+    ap.add_argument(
+        "--lean",
+        action="store_true",
+        help="Minimal prompts (steady-state). Tests language density without teach tax.",
+    )
+    ap.add_argument(
+        "--retries",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Max generation attempts per leg (charges all tries). Default 1 = first-try only.",
+    )
     args = ap.parse_args(argv)
 
     backend = args.backend
@@ -429,6 +619,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Forge vs Python — credit / token test")
     print("=" * 60)
     print(f"backend={backend}  model={args.model or '(default)'}  tasks={args.tasks}")
+    print(f"mode={'lean' if args.lean else 'cold'}  max_attempts={args.retries}")
     print(f"price_in=${args.price_in}/1M  price_out=${args.price_out}/1M")
     if backend == "ollama":
         print("Note: Ollama is local — $ billed = $0; tokens still real for credit math.")
@@ -439,6 +630,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         model=args.model,
         price_in=args.price_in,
         price_out=args.price_out,
+        lean=args.lean,
+        max_attempts=max(1, args.retries),
     )
 
     print("\n" + "=" * 60)
@@ -450,9 +643,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"  forge tokens:       {summary.forge_tokens}  (in={summary.forge_prompt} out={summary.forge_completion})")
     print(f"  python tokens:      {summary.python_tokens}  (in={summary.python_prompt} out={summary.python_completion})")
     print(f"  token savings:      {summary.token_savings_pct}%  (positive = Forge used fewer)")
+    print(f"  code density:       forge~{summary.forge_code_tokens}t  python~{summary.python_code_tokens}t  "
+          f"({summary.code_density_savings_pct}% smaller Forge programs)")
+    print(f"  hit output cap:     forge={summary.forge_hit_cap}  python={summary.python_hit_cap}")
     print(f"  forge est. USD:     ${summary.forge_est_usd}")
     print(f"  python est. USD:    ${summary.python_est_usd}")
     print(f"  USD savings:        {summary.usd_savings_pct}%  (at assumed rates)")
+    if summary.diagnosis:
+        print("  --- why ---")
+        for d in summary.diagnosis:
+            print(f"  · {d}")
     for n in summary.notes:
         print(f"  note: {n}")
 
