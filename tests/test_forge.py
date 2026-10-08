@@ -782,5 +782,49 @@ class TestDataTools(unittest.TestCase):
         self.assertGreater(hits[0]["relevance"], hits[1]["relevance"])
 
 
+
+class TestWebsitePlayground(unittest.TestCase):
+    """docs/index.html runs this repo's Python in the browser (Pyodide), loading it
+    from main. Run its bridge code and examples here so a runtime change can't
+    silently break the live site."""
+
+    @staticmethod
+    def _js_template(text: str) -> str:
+        return text.replace("\\\\", "\\")  # JS template literal: \\ -> \
+
+    def test_bridge_and_examples(self):
+        import json
+        import re
+
+        page = (ROOT / "docs" / "index.html").read_text(encoding="utf-8")
+        bridge = self._js_template(re.search(r"const BRIDGE = `([\s\S]*?)`;", page).group(1))
+        block = re.search(r"const EXAMPLES = \{([\s\S]*?)\n    \};", page).group(1)
+        examples = {k: self._js_template(v) for k, v in re.findall(r'"([^"]+)": `([\s\S]*?)`,', block)}
+        self.assertGreaterEqual(len(examples), 4)
+
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                ns: dict = {}
+                exec(compile(bridge, "playground-bridge", "exec"), ns)
+                play = ns["forge_play"]
+                for name, src in examples.items():
+                    with self.subTest(example=name):
+                        run = json.loads(play("run", src))
+                        ast = json.loads(play("ast", src))
+                        if "Errors" in name:
+                            self.assertFalse(run["ok"])
+                            check = json.loads(play("check", src))
+                            self.assertIn("unknown tool 'web_serch'", check["output"])
+                        else:
+                            self.assertTrue(run["ok"], run["output"])
+                            self.assertTrue(ast["ok"])
+                offline = json.loads(play("run", 'AGENT "n"\nSTEP g TOOL http_get INPUT { url: "https://x" } OUTPUT p\nRETURN $p'))
+                self.assertIn("browser playground", offline["output"])
+            finally:
+                os.chdir(cwd)
+
+
 if __name__ == "__main__":
     unittest.main()

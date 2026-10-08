@@ -4,12 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Forge — JavaScript for AI</title>
-  <meta name="description" content="Forge is an AI-native programming language for agents. Explicit. Unambiguous. Dual text + JSON AST. Made for how AIs write code." />
+  <meta name="description" content="Forge is an AI-native agent language. Agents write a whole multi-step job as one short program and run it in a single call instead of one tool call per step. Try it in your browser." />
   <meta property="og:title" content="Forge — JavaScript for AI" />
-  <meta property="og:description" content="The agent programming language built for LLMs — not bolted onto Python." />
+  <meta property="og:description" content="One call, not ten: the agent language that lets AIs run a whole job in a single tool call. Loops, checks, 19 tools, MCP server." />
   <meta property="og:image" content="https://kungfudoom.github.io/forge/hero-banner.jpg" />
   <meta property="og:url" content="https://kungfudoom.github.io/forge/" />
+  <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#05080d" />
   <link rel="icon" type="image/png" href="favicon.png" />
   <link rel="apple-touch-icon" href="emblem-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -252,20 +254,123 @@
     }
     .foot-brand { display: flex; align-items: center; gap: 10px; }
     .foot-brand img { width: 28px; height: 28px; border-radius: 8px; }
+
+    /* ---- v0.3 additions ---- */
+    :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 8px; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .emblem-ring { animation: none; }
+      .btn, .card { transition: none; }
+    }
+    @media (max-width: 640px) {
+      .nav-links a.opt { display: none; }
+    }
+    code.inline {
+      font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.88em;
+      background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 6px; color: var(--text);
+    }
+
+    /* One call, not ten */
+    .compare { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; margin-bottom: 18px; }
+    @media (max-width: 860px) { .compare { grid-template-columns: 1fr; } }
+    .lane { padding: 20px; }
+    .lane h3 { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .lane h3 small { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+    .trips { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+    .trips li {
+      display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center;
+      font-size: 0.9rem; padding: 8px 10px; border-radius: 10px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+    }
+    .trips .n {
+      width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+      font-size: 0.75rem; font-weight: 700; color: #041016; background: #fbbf24;
+    }
+    .trips .resend { color: #fbbf24; font-size: 0.78rem; white-space: nowrap; }
+    .lane.forge .trips .n { background: var(--mint); }
+    .lane.forge .trips .resend { color: var(--mint); }
+    .lane.forge pre { margin-top: 12px; font-size: 0.78rem; }
+    .footnote { color: var(--muted); font-size: 0.85rem; margin: 0 0 28px; max-width: 46rem; }
+
+    /* Playground */
+    .play { display: grid; gap: 16px; grid-template-columns: 1.1fr 0.9fr; }
+    @media (max-width: 900px) { .play { grid-template-columns: 1fr; } }
+    .play-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+    .play-bar select, .play-bar button {
+      font: inherit; font-size: 0.9rem; border-radius: 10px; padding: 9px 14px; cursor: pointer;
+      color: var(--text); background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12);
+    }
+    .play-bar select { max-width: 100%; }
+    .play-bar button.run {
+      color: #041016; font-weight: 700; border: none;
+      background: linear-gradient(90deg, var(--mint), var(--cyan));
+    }
+    .play-bar button:disabled { opacity: 0.6; cursor: progress; }
+    .kbd { color: var(--muted); font-size: 0.8rem; }
+    #editor {
+      width: 100%; min-height: 420px; resize: vertical;
+      background: #070b12; color: var(--text);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 16px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.82rem; line-height: 1.55;
+      tab-size: 2; white-space: pre; overflow: auto;
+    }
+    .out-wrap { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .status { font-size: 0.85rem; color: var(--muted); min-height: 1.4em; display: flex; gap: 8px; align-items: center; }
+    .status.ok { color: var(--mint); }
+    .status.err { color: #fca5a5; }
+    .spinner {
+      width: 14px; height: 14px; border-radius: 50%; flex: none;
+      border: 2px solid rgba(255,255,255,0.15); border-top-color: var(--cyan);
+      animation: spin 0.8s linear infinite;
+    }
+    #output { flex: 1; min-height: 420px; white-space: pre-wrap; word-break: break-word; }
+    #output.err { color: #fecaca; border-color: rgba(252,165,165,0.35); }
+    .play-note { color: var(--muted); font-size: 0.82rem; margin: 0; }
+    @media (max-width: 640px) {
+      /* 16px stops iOS Safari from zooming the page when a field is focused */
+      #editor, .play-bar select { font-size: 16px; }
+      #editor { min-height: 340px; }
+      #output { min-height: 180px; }
+    }
+
+    /* Code blocks with copy buttons */
+    .codebox { position: relative; }
+    .codebox pre { padding-right: 76px; }
+    .copy {
+      position: absolute; top: 10px; right: 10px;
+      font: inherit; font-size: 0.75rem; cursor: pointer;
+      color: var(--muted); background: rgba(5,8,13,0.85);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 4px 10px;
+    }
+    .copy:hover { color: var(--text); }
+    .stack { display: grid; gap: 14px; }
+    .label { font-size: 0.85rem; color: var(--muted); margin: 0 0 6px; }
+
+    .foot-links { display: flex; gap: 16px; flex-wrap: wrap; }
+    .foot-links a { color: var(--muted); text-decoration: none; }
+    .foot-links a:hover { color: var(--text); }
+    /* Grid columns may shrink below their content; long code scrolls inside its box */
+    .compare > *, .split > *, .play > *, .grid3 > *, .hero-inner > *, .stack > * { min-width: 0; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
   </style>
 </head>
 <body>
-  <nav class="nav">
+  <nav class="nav" aria-label="Main">
     <div class="nav-inner">
       <a class="brand" href="./">
-        <img src="emblem.jpg" alt="Forge emblem" />
+        <img src="emblem-192.png" alt="" width="40" height="40" />
         <span>Forge</span>
       </a>
       <div class="nav-links">
-        <a href="#why">Why</a>
-        <a href="#code">Language</a>
-        <a href="#start">Start</a>
-        <a class="nav-cta" href="https://github.com/kungFuDOOM/forge">Star on GitHub</a>
+        <a class="opt" href="#why">Why</a>
+        <a href="#playground">Playground</a>
+        <a class="opt" href="#language">Language</a>
+        <a class="opt" href="#mcp">For agents</a>
+        <a class="opt" href="#start">Start</a>
+        <a class="nav-cta" href="https://github.com/kungFuDOOM/forge">GitHub</a>
       </div>
     </div>
   </nav>
@@ -275,58 +380,114 @@
     <div class="hero-banner" aria-hidden="true"></div>
     <div class="hero-inner">
       <div class="hero-copy">
-        <div class="kicker"><i></i> AI-native agent language</div>
+        <div class="kicker"><i></i> v0.3 · AI-native agent language</div>
         <h1>JavaScript<br /><span class="grad">for AI</span></h1>
         <p class="lead">
-          Forge is a programming language built for how models generate code —
-          explicit, unambiguous, dual text + JSON AST.
-          Not another Python agent framework.
+          Agents burn credits making one tool call per step. With Forge they write the whole
+          job as one short program (loops, checks and all) and run it in a single call.
         </p>
         <div class="row">
-          <a class="btn btn-primary" href="https://github.com/kungFuDOOM/forge">Get the code</a>
-          <a class="btn btn-ghost" href="#start">60-second start</a>
+          <a class="btn btn-primary" href="#playground">Try it in your browser</a>
+          <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge">Get the code</a>
         </div>
         <div class="mini-stats">
-          <div><strong>AGENT → RETURN</strong>the whole program</div>
-          <div><strong>Text + JSON AST</strong>same semantics</div>
-          <div><strong>./forge ask</strong>English → run</div>
+          <div><strong>1 call</strong>instead of one per step</div>
+          <div><strong>~700 tokens</strong>whole language + tools</div>
+          <div><strong>0 dependencies</strong>Python standard library</div>
         </div>
       </div>
       <div class="emblem-wrap">
         <div class="emblem-ring" aria-hidden="true"></div>
-        <img class="emblem" src="emblem.jpg" alt="Forge emblem — anvil with neon forge beam" />
+        <img class="emblem" src="emblem.jpg" alt="Forge emblem: an anvil with a neon forge beam" width="320" height="320" />
       </div>
     </div>
   </header>
 
+  <main>
   <section id="why">
-    <h2 class="section-title">Why Forge exists</h2>
+    <h2 class="section-title">One call, not ten</h2>
     <p class="section-sub">
-      Humans built Python and JavaScript for humans. Agents forced into those languages
-      fight syntax, precedence, and framework glue. Forge is the agent loop as a language.
+      Every tool round trip re-sends the agent's whole conversation. A Forge program does the
+      same work inside one call, so the conversation is sent once.
+    </p>
+    <div class="compare">
+      <div class="card lane">
+        <h3>Tool by tool <small>6 round trips</small></h3>
+        <ol class="trips">
+          <li><span class="n">1</span>web_search "agent languages"<span class="resend">↻ resend chat</span></li>
+          <li><span class="n">2</span>http_get result 1<span class="resend">↻ resend chat</span></li>
+          <li><span class="n">3</span>http_get result 2<span class="resend">↻ resend chat</span></li>
+          <li><span class="n">4</span>http_get result 3<span class="resend">↻ resend chat</span></li>
+          <li><span class="n">5</span>write_file digest.md<span class="resend">↻ resend chat</span></li>
+          <li><span class="n">6</span>read result, reply<span class="resend">↻ resend chat</span></li>
+        </ol>
+      </div>
+      <div class="card lane forge">
+        <h3>With Forge <small>1 round trip</small></h3>
+        <ol class="trips">
+          <li><span class="n">1</span>forge_run(program)<span class="resend">sent once</span></li>
+        </ol>
+        <pre class="mono" aria-label="Forge program for the same job"><span class="kw">STEP</span> s <span class="kw">TOOL</span> web_search <span class="kw">INPUT</span> { q: <span class="var">$topic</span>, n: 3 } <span class="kw">OUTPUT</span> hits
+<span class="kw">FOR EACH</span> h <span class="kw">IN</span> <span class="var">$hits</span> <span class="kw">OUTPUT</span> pages
+  <span class="kw">STEP</span> get <span class="kw">TOOL</span> http_get <span class="kw">INPUT</span> { url: <span class="var">$h.url</span> } <span class="kw">OUTPUT</span> page
+  <span class="kw">YIELD</span> <span class="var">$page.text</span>
+<span class="kw">END</span>
+<span class="kw">STEP</span> doc <span class="kw">TOOL</span> join <span class="kw">INPUT</span> { list: <span class="var">$pages</span> } <span class="kw">OUTPUT</span> digest
+<span class="kw">STEP</span> save <span class="kw">TOOL</span> write_file <span class="kw">INPUT</span> { path: <span class="str">"digest.md"</span>, body: <span class="var">$digest</span> } <span class="kw">OUTPUT</span> saved</pre>
+      </div>
+    </div>
+    <p class="footnote">
+      How much this saves depends on how many steps the job has and how long the conversation already is.
+      Measure it on your own model with <code class="inline">./forge credit-test</code>.
     </p>
     <div class="grid3">
       <div class="card">
         <div class="icon">⚡</div>
         <h3>Made for AI emission</h3>
-        <p>Uppercase keywords, <code class="mono">$variables</code>, no precedence surprises. LLMs pattern-match it cleanly.</p>
+        <p>Uppercase keywords, <code class="mono">$variables</code>, no operator precedence to get wrong. The whole language fits in an agent's context.</p>
       </div>
       <div class="card">
-        <div class="icon">🧬</div>
-        <h3>Dual representation</h3>
-        <p>Write text syntax — or emit a JSON AST and skip parsing entirely. Same nodes. Same runtime.</p>
+        <div class="icon">🩺</div>
+        <h3>Errors an AI can fix</h3>
+        <p>Typos, unknown tools and undefined variables are caught before anything runs, all at once, with the valid options listed. One retry usually fixes it.</p>
       </div>
       <div class="card">
-        <div class="icon">🛠</div>
-        <h3>One call, not ten</h3>
-        <p>Agents run a whole fetch → check → summarize → save job in a single <code class="mono">forge_run</code> MCP call instead of a round trip per step. Web, file and data tools included.</p>
+        <div class="icon">🛡</div>
+        <h3>Safe to hand an agent</h3>
+        <p>Step and time budgets, file access limited to the working folder, and a cap on what each REASON sends to the LLM.</p>
       </div>
     </div>
   </section>
 
-  <section id="code">
-    <h2 class="section-title">A complete agent program</h2>
-    <p class="section-sub">Loop, think, act, verify, return. One program, one run.</p>
+  <section id="playground">
+    <h2 class="section-title">Playground</h2>
+    <p class="section-sub">
+      Edit a program and run it. This is the real Forge runtime, running in your browser with Python
+      compiled to WebAssembly. Nothing is sent to a server.
+    </p>
+    <div class="play">
+      <div>
+        <div class="play-bar">
+          <label class="sr-only" for="example">Example program</label>
+          <select id="example"></select>
+          <button class="run" id="run" type="button">▶ Run</button>
+          <button id="check" type="button">Check</button>
+          <button id="ast" type="button">JSON AST</button>
+          <span class="kbd">Ctrl/⌘ + Enter runs</span>
+        </div>
+        <textarea id="editor" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Forge program"></textarea>
+      </div>
+      <div class="out-wrap">
+        <div class="status" id="status" role="status" aria-live="polite">Press Run. The first run downloads the Python runtime (about 12 MB).</div>
+        <pre class="mono" id="output" aria-label="Output"></pre>
+        <p class="play-note">REASON steps use a mock LLM here, and the network tools (<code class="inline">http_get</code>, <code class="inline">http_post</code>) need the CLI or MCP server.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="language">
+    <h2 class="section-title">The whole language</h2>
+    <p class="section-sub">Loop, think, act, verify, return. That's all of it: no imports, no framework.</p>
     <div class="split">
       <pre class="mono" aria-label="Forge example program"><span class="kw">AGENT</span> <span class="str">"page-digest"</span>
 
@@ -359,36 +520,77 @@
           <span class="pill mono">YIELD</span>
           <span class="pill mono">RETURN</span>
         </div>
-        <p style="margin-top:18px;color:var(--muted)">
-          Pipeline: <strong style="color:var(--text)">emit → repair → validate → check → run</strong>
+        <p style="margin-top:18px">
+          <strong style="color:var(--text)">19 built-in tools</strong>: web (<code class="inline">http_get</code>, <code class="inline">http_post</code>, <code class="inline">web_search</code>),
+          files, and data (<code class="inline">sort</code>, <code class="inline">pick</code>, <code class="inline">sum</code>, <code class="inline">format</code>…).
+          Add your own with one Python function.
+        </p>
+        <p style="margin-top:12px">
+          Text syntax <em>or</em> JSON AST, same runtime. <code class="inline">forge spec</code> prints the whole
+          reference for an AI's context window.
         </p>
         <div class="row" style="margin-top:22px;margin-bottom:0">
-          <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge/blob/main/VISION.md">Read the vision</a>
+          <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge#readme">Read the docs</a>
+          <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge/blob/main/VISION.md">The vision</a>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="mcp">
+    <h2 class="section-title">Give your agent Forge</h2>
+    <p class="section-sub">
+      Forge ships an MCP server. Any MCP client (Claude Code, Claude Desktop, Cursor and others)
+      gets two tools: <code class="inline">forge_run</code> and <code class="inline">forge_check</code>.
+      The language reference rides along in the tool description, so the agent needs no other docs.
+    </p>
+    <div class="split">
+      <div class="stack">
+        <div>
+          <p class="label">Install the <code class="inline">forge</code> command</p>
+          <pre class="mono copyable">pip install git+https://github.com/kungFuDOOM/forge.git</pre>
+        </div>
+        <div>
+          <p class="label">Claude Code</p>
+          <pre class="mono copyable">claude mcp add forge -- forge mcp</pre>
+        </div>
+        <div>
+          <p class="label">Add your own tools</p>
+          <pre class="mono copyable">forge mcp --tools my_tools.py</pre>
+        </div>
+      </div>
+      <div>
+        <p class="label">Any MCP client config (JSON)</p>
+        <pre class="mono copyable">{
+  "mcpServers": {
+    "forge": {
+      "command": "forge",
+      "args": ["mcp"]
+    }
+  }
+}</pre>
       </div>
     </div>
   </section>
 
   <section id="start">
     <h2 class="section-title">Start in 60 seconds</h2>
-    <p class="section-sub">No API key needed for demos. Optional Ollama for <span class="mono">./forge ask</span>.</p>
-    <pre class="mono"><span class="cmt"># clone &amp; go</span>
+    <p class="section-sub">No API key needed for the demos. Add Ollama or a free Groq / Gemini key for <code class="inline">./forge ask</code> and live REASON steps.</p>
+    <pre class="mono copyable"><span class="cmt"># clone &amp; go</span>
 git clone https://github.com/kungFuDOOM/forge.git
 cd forge
 
 ./forge quickstart
-./forge run examples/url_fetcher.forge
-./forge run examples/file_summarizer.forge
-./forge ask <span class="str">"Add 3 and 9 and return the total"</span>
-
-<span class="cmt"># give your AI agent Forge as a tool (MCP)</span>
-claude mcp add forge -- python3 <span class="str">"$PWD/forge_cli.py"</span> mcp</pre>
+./forge run examples/deal_triage.forge
+./forge ask <span class="str">"Fetch example.com and summarize it"</span>
+./forge spec</pre>
   </section>
+  </main>
 
   <div class="cta-band">
     <div class="cta-inner">
       <div>
-        <h2>Forge the native tongue for agents</h2>
+        <h2>Forge: the native tongue for agents</h2>
         <p>Open source · MIT · built in the open</p>
       </div>
       <div class="row" style="margin:0">
@@ -401,11 +603,264 @@ claude mcp add forge -- python3 <span class="str">"$PWD/forge_cli.py"</span> mcp
   <footer>
     <div class="foot-inner">
       <div class="foot-brand">
-        <img src="emblem.jpg" alt="" />
-        <span>Forge — JavaScript for AI</span>
+        <img src="emblem-192.png" alt="" width="28" height="28" />
+        <span>Forge: JavaScript for AI</span>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/kungFuDOOM/forge">GitHub</a>
+        <a href="https://github.com/kungFuDOOM/forge#readme">Docs</a>
+        <a href="https://github.com/kungFuDOOM/forge/blob/main/VISION.md">Vision</a>
       </div>
       <div>Human holds the vision. AI builds the language.</div>
     </div>
   </footer>
+
+  <script>
+  (() => {
+    "use strict";
+
+    // ---------- copy buttons ----------
+    for (const pre of document.querySelectorAll("pre.copyable")) {
+      const box = document.createElement("div");
+      box.className = "codebox";
+      pre.replaceWith(box);
+      box.appendChild(pre);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "copy";
+      btn.textContent = "Copy";
+      btn.setAttribute("aria-label", "Copy to clipboard");
+      btn.addEventListener("click", async () => {
+        const text = pre.innerText.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          const ta = document.createElement("textarea");
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          document.execCommand("copy"); ta.remove();
+        }
+        btn.textContent = "Copied";
+        setTimeout(() => (btn.textContent = "Copy"), 1400);
+      });
+      box.appendChild(btn);
+    }
+
+    // ---------- playground ----------
+    const EXAMPLES = {
+      "Deal triage: loop, IF, YIELD": `AGENT "deal-triage"
+
+MEMORY {
+  region: "north"
+  watchlist: ["Acme", "Gamma Inc"]
+}
+
+STEP get TOOL sales_data INPUT { region: $region, period: "Q4" } OUTPUT deals
+
+VERIFY $deals != []
+
+FOR EACH d IN $deals OUTPUT flagged
+  IF $d.amount > 10000 AND $watchlist CONTAINS $d.deal
+    REASON "In one line, why does this deal need attention?" ON $d OUTPUT why
+    YIELD { deal: $d.deal, amount: $d.amount, why: $why }
+  END
+END
+
+STEP top TOOL sort INPUT { list: $flagged, by: "amount", desc: true } OUTPUT ranked
+STEP total TOOL sum INPUT { list: $flagged, field: "amount" } OUTPUT at_stake
+
+RETURN { flagged: $ranked, at_stake: $at_stake }
+`,
+      "Research digest: search, filter, summarize": `AGENT "research-digest"
+
+MEMORY { topic: "AI agent languages", keep: 0.7 }
+
+STEP search TOOL web_search INPUT { q: $topic, n: 5 } OUTPUT hits
+STEP good FILTER relevance > $keep ON $hits OUTPUT top
+
+VERIFY $top != []
+
+FOR EACH h IN $top OUTPUT notes
+  REASON "One-line takeaway" ON $h.snippet OUTPUT note
+  YIELD { title: $h.title, note: $note }
+END
+
+STEP n TOOL count INPUT { list: $notes } OUTPUT total
+
+RETURN { topic: $topic, sources: $total, notes: $notes }
+`,
+      "Write a report file": `AGENT "status-report"
+
+MEMORY {
+  team: "forge"
+  items: ["loops shipped", "MCP server live", "19 built-in tools"]
+}
+
+STEP bullets TOOL join INPUT { list: $items, sep: "\\n- " } OUTPUT lines
+STEP doc TOOL format INPUT { template: "# {team} weekly\\n- {lines}\\n", team: $team, lines: $lines } OUTPUT report
+STEP save TOOL write_file INPUT { path: "out/report.md", body: $report } OUTPUT saved
+STEP back TOOL read_file INPUT { path: $saved.path } OUTPUT file
+
+VERIFY $file.chars > 0
+
+RETURN { saved: $saved.path, report: $file.body }
+`,
+      "Errors an AI can fix (press Check)": `AGENT "typo-demo"
+
+MEMORY { query: "forge" }
+
+STEP find TOOL web_serch INPUT { q: $qeury } OUTPUT hits
+
+RETURN { hits: $hit }
+`,
+    };
+
+    const params = new URLSearchParams(location.search);
+    const PYODIDE = params.get("pyodide") || "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/";
+    const SRC = location.hostname.endsWith("github.io")
+      ? "https://raw.githubusercontent.com/kungFuDOOM/forge/main/"
+      : (params.get("src") || "../");
+    const FILES = ["forge_core.py", "forge_repair.py", "forge_runtime.py", "examples/sample_notes.txt"];
+
+    const BRIDGE = `
+import json, sys
+sys.path.insert(0, ".")
+from forge_core import ForgeError, ast_to_json, check_program, compile_auto, validate_ast
+from forge_repair import try_compile_repaired
+from forge_runtime import Evaluator, MockLLMClient, ToolRegistry
+
+def _offline(name):
+    def tool(inputs):
+        raise ForgeError(f"{name} needs network access, which the browser playground doesn't have. "
+                         "Run this program with ./forge run or the MCP server.")
+    return tool
+
+def _tools():
+    t = ToolRegistry()
+    docs = t.docs()
+    for n in ("http_get", "http_post"):
+        t.register(n, _offline(n), docs[n])
+    return t
+
+def _compile(source):
+    try:
+        return compile_auto(source), None
+    except ForgeError as first:
+        try:
+            program, _, _ = try_compile_repaired(source)
+            return program, "auto-repaired before running"
+        except ForgeError:
+            raise first
+
+def forge_play(action, source):
+    try:
+        program, note = _compile(source)
+        tools = _tools()
+        if action == "check":
+            problems = validate_ast(program) or check_program(program, tools.names())
+            if problems:
+                return json.dumps({"ok": False, "output": "Check found problems:\\n" + "\\n".join(problems)})
+            return json.dumps({"ok": True, "output": f"OK: agent={program.agent.name!r}, {len(program.steps)} top-level steps, no problems found.", "note": note})
+        if action == "ast":
+            return json.dumps({"ok": True, "output": ast_to_json(program), "note": note})
+        ev = Evaluator(tools=tools, llm=MockLLMClient(), max_steps=10000, max_seconds=10)
+        result = ev.run(program)
+        return json.dumps({"ok": True, "output": json.dumps(result, indent=2, default=str), "note": note, "steps": ev.steps_run})
+    except Exception as e:
+        return json.dumps({"ok": False, "output": f"{type(e).__name__}: {e}"})
+`;
+
+    const $ = (id) => document.getElementById(id);
+    const editor = $("editor"), output = $("output"), status = $("status"), select = $("example");
+    const buttons = [$("run"), $("check"), $("ast")];
+
+    for (const name of Object.keys(EXAMPLES)) {
+      const opt = document.createElement("option");
+      opt.textContent = name;
+      select.appendChild(opt);
+    }
+    editor.value = EXAMPLES[select.value];
+    select.addEventListener("change", () => {
+      editor.value = EXAMPLES[select.value];
+      output.textContent = "";
+      output.classList.remove("err");
+    });
+
+    function setStatus(text, kind, busy) {
+      status.className = "status" + (kind ? " " + kind : "");
+      status.textContent = "";
+      if (busy) {
+        const s = document.createElement("span");
+        s.className = "spinner";
+        s.setAttribute("aria-hidden", "true");
+        status.appendChild(s);
+      }
+      status.appendChild(document.createTextNode(text));
+    }
+
+    function loadScript(url) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = url; s.onload = resolve;
+        s.onerror = () => reject(new Error("Could not load " + url));
+        document.head.appendChild(s);
+      });
+    }
+
+    let ready = null;
+    function loadForge() {
+      if (ready) return ready;
+      ready = (async () => {
+        setStatus("Loading Python in your browser (about 12 MB, first run only)…", "", true);
+        await loadScript(PYODIDE + "pyodide.js");
+        const py = await loadPyodide({ indexURL: PYODIDE });
+        setStatus("Loading the Forge runtime…", "", true);
+        // JS FS paths resolve from "/", Python runs in its own cwd: use absolute paths
+        const home = py.runPython("import os; os.getcwd()");
+        py.FS.mkdirTree(home + "/examples");
+        await Promise.all(FILES.map(async (f) => {
+          const res = await fetch(SRC + f, { cache: "no-cache" });
+          if (!res.ok) throw new Error(`Could not fetch ${f} (HTTP ${res.status})`);
+          py.FS.writeFile(home + "/" + f, await res.text());
+        }));
+        py.runPython(BRIDGE);
+        return py.globals.get("forge_play");
+      })();
+      ready.catch(() => { ready = null; });
+      return ready;
+    }
+
+    async function act(action) {
+      buttons.forEach((b) => (b.disabled = true));
+      try {
+        const play = await loadForge();
+        setStatus(action === "run" ? "Running…" : "Working…", "", true);
+        await new Promise((r) => setTimeout(r, 0)); // let the status paint
+        const t0 = performance.now();
+        const res = JSON.parse(play(action, editor.value));
+        const ms = Math.round(performance.now() - t0);
+        output.textContent = res.output;
+        output.classList.toggle("err", !res.ok);
+        let msg = res.ok
+          ? (action === "run" ? `Ran ${res.steps} steps in ${ms} ms` : action === "check" ? "Check passed" : "Parsed to JSON AST")
+          : (action === "check" ? "Check found problems, and each one names what's available" : "Error: the message says what to fix");
+        if (res.note) msg += ` (${res.note})`;
+        setStatus(msg, res.ok ? "ok" : "err");
+      } catch (e) {
+        console.error(e);
+        setStatus("Couldn't start the playground: " + ((e && e.message) || String(e)) + ". Try reloading, or run Forge locally.", "err");
+      } finally {
+        buttons.forEach((b) => (b.disabled = false));
+      }
+    }
+
+    $("run").addEventListener("click", () => act("run"));
+    $("check").addEventListener("click", () => act("check"));
+    $("ast").addEventListener("click", () => act("ast"));
+    editor.addEventListener("focus", () => { loadForge().catch(() => {}); }, { once: true });
+    editor.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); act("run"); }
+    });
+  })();
+  </script>
 </body>
 </html>
