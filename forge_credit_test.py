@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import json
 import os
 import re
@@ -351,6 +352,19 @@ def _extract_python(text: str) -> str:
     return raw
 
 
+# Builtins visible to generated Python: enough for agent glue, nothing that
+# touches the filesystem, network, or interpreter (open, __import__, eval, ...).
+_SAFE_BUILTINS = {
+    name: getattr(builtins, name)
+    for name in (
+        "abs", "all", "any", "bool", "dict", "enumerate", "filter", "float",
+        "int", "isinstance", "len", "list", "map", "max", "min", "print",
+        "range", "reversed", "round", "set", "sorted", "str", "sum", "tuple",
+        "zip", "Exception", "ValueError", "KeyError", "TypeError",
+    )
+}
+
+
 def eval_python(text: str) -> tuple[bool, Optional[str], str]:
     code = _extract_python(text)
     try:
@@ -365,14 +379,16 @@ def eval_python(text: str) -> tuple[bool, Optional[str], str]:
     if not has_run:
         return False, "Missing def run(tools, llm)", code
 
-    # Ban imports for safety
+    # Ban imports and dunder access (the usual sandbox escapes)
     for n in ast.walk(tree):
         if isinstance(n, (ast.Import, ast.ImportFrom)):
             return False, "Imports not allowed in credit-test Python", code
+        if isinstance(n, ast.Attribute) and n.attr.startswith("__"):
+            return False, "Dunder attribute access not allowed in credit-test Python", code
 
     tools = ToolRegistry()
     llm = MockLLMClient()
-    ns: dict[str, Any] = {}
+    ns: dict[str, Any] = {"__builtins__": _SAFE_BUILTINS}
     try:
         exec(compile(tree, "<forge_credit_python>", "exec"), ns, ns)
         fn = ns.get("run")

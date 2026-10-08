@@ -6,8 +6,8 @@ MEMORY {
 
 STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
 
-REASON "In one sentence, what is this page about?" ON $page OUTPUT summary
+VERIFY $page.status == 200
 
-VERIFY $page != null
+REASON "In one sentence, what is this page about?" ON $page.body OUTPUT summary
 
-RETURN { url: $url, summary: $summary, page: $page }
+RETURN { url: $url, status: $page.status, summary: $summary }

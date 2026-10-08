@@ -26,6 +26,7 @@ from forge_core import (
     ToolCall,
     Variable,
     Verify,
+    check_program,
     compile_auto,
     compile_forge,
     EXAMPLES,
@@ -42,6 +43,10 @@ class ForgeRuntimeError(ForgeError):
 
 class ForgeVerifyError(ForgeRuntimeError):
     """VERIFY assertion failed."""
+
+
+class ForgeCheckError(ForgeRuntimeError):
+    """Static pre-run check failed (nothing was executed)."""
 
 
 # =============================================================================
@@ -428,6 +433,11 @@ class Evaluator:
         self.memory = {}
         self.agent_name = program.agent.name
 
+        # 0. Static check — fail before any tool or LLM call is spent
+        problems = check_program(program, self.tools.names())
+        if problems:
+            raise ForgeCheckError("Check failed:\n  " + "\n  ".join(problems))
+
         # 1. AGENT — identity only
         # 2. MEMORY
         if program.memory:
@@ -464,6 +474,8 @@ class Evaluator:
             self.memory[action.output_var] = result
         elif isinstance(action, Reason):
             self._eval_reason(action)
+        elif isinstance(action, Verify):
+            self._eval_verify(action)
         else:
             raise ForgeRuntimeError(f"Unknown step action: {type(action)}")
 
@@ -508,10 +520,33 @@ class Evaluator:
         raise ForgeRuntimeError(f"Cannot evaluate value node: {type(node)}")
 
     def _resolve_var(self, name: str) -> Any:
-        # name without $
-        if name not in self.memory:
-            raise ForgeRuntimeError(f"Undefined variable: ${name}")
-        return self.memory[name]
+        # name without $, optionally a dotted path: doc.body, hits.0.title
+        base, *path = name.split(".")
+        if base not in self.memory:
+            raise ForgeRuntimeError(f"Undefined variable: ${base}")
+        value = self.memory[base]
+        walked = base
+        for part in path:
+            if isinstance(value, dict):
+                if part not in value:
+                    raise ForgeRuntimeError(
+                        f"${walked} has no field {part!r} "
+                        f"(fields: {', '.join(map(str, value.keys())) or 'none'})"
+                    )
+                value = value[part]
+            elif isinstance(value, list) and part.isdigit():
+                idx = int(part)
+                if idx >= len(value):
+                    raise ForgeRuntimeError(
+                        f"${walked} index {idx} out of range (length {len(value)})"
+                    )
+                value = value[idx]
+            else:
+                raise ForgeRuntimeError(
+                    f"Cannot read {part!r} from ${walked} ({type(value).__name__})"
+                )
+            walked += "." + part
+        return value
 
     def _eval_comparison(
         self,

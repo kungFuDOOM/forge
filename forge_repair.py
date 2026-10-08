@@ -17,6 +17,25 @@ KEYWORDS = (
     "ON", "REASON", "VERIFY", "RETURN",
 )
 
+_STRING_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'')
+
+
+def _sub_code(pattern: str, repl, s: str, flags: int = 0) -> str:
+    """re.sub applied only outside string literals, so prompts stay verbatim."""
+    out: list[str] = []
+    last = 0
+    for m in _STRING_RE.finditer(s):
+        out.append(re.sub(pattern, repl, s[last : m.start()], flags=flags))
+        out.append(m.group(0))
+        last = m.end()
+    out.append(re.sub(pattern, repl, s[last:], flags=flags))
+    return "".join(out)
+
+
+def _mask_strings(s: str) -> str:
+    """Same-length copy with string-literal contents blanked, for searching code."""
+    return _STRING_RE.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], s)
+
 
 def extract_forge(text: str, prefer_json: bool = False) -> str:
     """Pull Forge source or JSON AST out of messy LLM output."""
@@ -60,9 +79,12 @@ def repair_forge(source: str) -> str:
     if m and m.start() > 0:
         s = s[m.start() :]
 
-    # Uppercase reserved keywords (word boundaries)
+    # Normalize smart quotes first so string literals are detected correctly
+    s = s.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+
+    # Uppercase reserved keywords (word boundaries, outside strings)
     for kw in KEYWORDS:
-        s = re.sub(rf"\b{kw}\b", kw, s, flags=re.I)
+        s = _sub_code(rf"\b{kw}\b", kw, s, flags=re.I)
 
     # AGENT name without quotes: AGENT foo-bar / AGENT deal_finder → AGENT "..."
     s = re.sub(
@@ -146,9 +168,6 @@ def repair_forge(source: str) -> str:
             at = m_agent.end()
             s = s[:at] + "\n" + mem + "\n" + s[at:]
 
-    # Normalize smart quotes
-    s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-
     # Strip markdown fences / backticks leftovers
     s = s.replace("```", "\n")
     s = re.sub(r"`+", "", s)
@@ -157,10 +176,10 @@ def repair_forge(source: str) -> str:
     s = re.sub(r"(?i)\bKEEP\s+FILTER\b", "STEP keep FILTER", s)
 
     # Cut trailing junk after RETURN (extra STEP/AGENT/prose/fences)
-    ret = re.search(r"\bRETURN\b[\s\S]*", s)
+    ret = re.search(r"\bRETURN\b", _mask_strings(s))
     if ret:
         head = s[: ret.start()]
-        tail = ret.group(0)
+        tail = s[ret.start() :]
         lines = tail.splitlines()
         kept: list[str] = []
         brace_depth = 0
@@ -187,9 +206,9 @@ def repair_forge(source: str) -> str:
                 break
         s = head + "\n".join(kept)
 
-    # key=value → key: value (MEMORY / INPUT / objects)
-    s = re.sub(
-        r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*",
+    # key=value → key: value (MEMORY / INPUT / objects); never touches ==
+    s = _sub_code(
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*",
         r"\1: ",
         s,
     )
@@ -264,17 +283,9 @@ def repair_forge(source: str) -> str:
     # Collapse Windows newlines
     s = s.replace("\r\n", "\n").replace("\r", "\n")
 
-    # If VERIFY appears after RETURN, swap (common LLM order bug)
-    if re.search(r"\bRETURN\b[\s\S]*\bVERIFY\b", s) and not re.search(
-        r"\bVERIFY\b[\s\S]*\bRETURN\b", s
-    ):
-        parts = re.split(r"(\bVERIFY\b[\s\S]*?)(\bRETURN\b[\s\S]*)", s)
-        # fragile — only when VERIFY somehow after; usually RETURN ends program
-        pass
-
     # Ensure newline before major keywords for readability / lex stability
     for kw in ("MEMORY", "STEP", "REASON", "VERIFY", "RETURN"):
-        s = re.sub(rf"([^\n])\s*({kw}\b)", rf"\1\n\2", s)
+        s = _sub_code(rf"([^\n])\s*({kw}\b)", rf"\1\n\2", s)
 
     return s.strip() + "\n"
 

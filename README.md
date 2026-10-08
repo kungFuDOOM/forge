@@ -13,7 +13,6 @@ Built for how AIs generate code — not 1990s human IDE habits.
 ```bash
 git clone https://github.com/kungFuDOOM/forge.git
 cd forge
-chmod +x forge
 ./forge quickstart
 ```
 
@@ -53,12 +52,16 @@ MEMORY {
 
 STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
 
-REASON "In one sentence, what is this page about?" ON $page OUTPUT summary
+VERIFY $page.status == 200
 
-VERIFY $page != null
+REASON "In one sentence, what is this page about?" ON $page.body OUTPUT summary
 
-RETURN { url: $url, summary: $summary }
+RETURN { url: $url, status: $page.status, summary: $summary }
 ```
+
+- **Field access** — `$page.body`, `$hits.0.title` read one field of a tool result, so REASON only sends the LLM what it needs.
+- **VERIFY anywhere** — use as many as you like; a failed VERIFY stops the program *before* the next tool or LLM call.
+- **Pre-run check** — undefined `$vars` and unknown tools are caught before anything executes.
 
 ---
 
@@ -79,7 +82,7 @@ RETURN { url: $url, summary: $summary }
 ./forge repl             # interactive
 ```
 
-REASON can sit **between** STEPs (think → then act), e.g. write a file from a reasoned report.
+REASON and VERIFY can sit **between** STEPs (think → then act), e.g. write a file from a reasoned report.
 
 Same via `python3 forge_cli.py …`.
 
@@ -100,7 +103,13 @@ python3 forge_generate.py --backend ollama "Add 3 and 9, return total"
 
 - Primitives: `AGENT` `MEMORY` `STEP` `TOOL` `FILTER` `REASON` `VERIFY` `RETURN`
 - Dual path: text syntax **or** JSON AST
-- Pipeline: emit → repair → validate → run
+- Pipeline: emit → repair → validate → check → run
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 - See [VISION.md](VISION.md) · [BENCH.md](BENCH.md)
 
 ## Reliability (local `llama3.2:1b`)

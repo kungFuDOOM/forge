@@ -45,8 +45,12 @@ def _friendly_error(exc: Exception) -> str:
     if "Expected" in msg or "parse" in name.lower() or "Parse" in name:
         hints.append("Run: ./forge check FILE.forge")
         hints.append("Or:  ./forge check FILE.forge --repair")
-    if "http_get" in msg or "URL" in msg:
+    if "has no field" in msg or ("index" in msg and "out of range" in msg):
+        hints.append("Field paths read tool output: $page.body, $hits.0.title")
+    if "http_get requires" in msg:
         hints.append("http_get needs: INPUT { url: \"https://...\" }")
+    elif "http_get failed" in msg:
+        hints.append("Check the URL and your network connection.")
     if hints:
         return f"{name}: {msg}\n  tip: " + "\n  tip: ".join(hints)
     return f"{name}: {msg}"
@@ -85,8 +89,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    from forge_core import compile_auto, ast_to_json, validate_ast
+    from forge_core import compile_auto, ast_to_json, check_program, validate_ast
     from forge_repair import try_compile_repaired
+    from forge_runtime import ToolRegistry
 
     path = Path(args.file)
     if not path.exists():
@@ -104,7 +109,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"  {_friendly_error(e)}")
         return 1
 
-    errs = validate_ast(program)
+    errs = validate_ast(program) or check_program(program, ToolRegistry().names())
     if errs:
         print(f"FAIL  {path}")
         for e in errs:
@@ -248,6 +253,7 @@ def cmd_tools(args: argparse.Namespace) -> int:
         print(f"    {docs.get(name, '')}")
     print("\nExample:")
     print('  STEP fetch TOOL http_get INPUT { url: "https://example.com" } OUTPUT page')
+    print('  REASON "Summarize" ON $page.body OUTPUT summary   # read one field')
     return 0
 
 
@@ -371,7 +377,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     print(f"# ask: {task}")
     print(f"# backend={args.backend}  mode={args.mode}")
     try:
-        generate_and_run._live_reason = False  # type: ignore
+        generate_and_run._live_reason = args.live_reason  # type: ignore
         out = generate_and_run(
             task,
             backend=args.backend,
@@ -383,7 +389,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         print("  tip: ./start_ollama.sh   or set GROQ_API_KEY / GEMINI_API_KEY", file=sys.stderr)
         return 1
 
-    if args.show_source or not out.get("parse_ok"):
+    if not args.hide_source or not out.get("parse_ok"):
         print("\n=== generated Forge ===")
         print(out.get("extracted") or (out.get("raw_response") or "")[:2000])
 
@@ -400,10 +406,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
     # Optionally save
     if args.save and out.get("extracted") and out.get("parse_ok"):
+        # JSON AST output is saved as-is; `forge run` accepts either form
         path = Path(args.save)
-        path.write_text(out["extracted"] if not str(out["extracted"]).lstrip().startswith("{")
-                        else out["extracted"], encoding="utf-8")
-        # If JSON AST, still save — user can run with compile_auto
+        path.write_text(out["extracted"], encoding="utf-8")
         print(f"\nSaved → {path}")
         print(f"  ./forge run {path} --repair")
 
@@ -508,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
     ask_p.add_argument("--backend", default="auto", help="auto|ollama|openai")
     ask_p.add_argument("--mode", choices=["text", "json"], default="text")
     ask_p.add_argument("--no-run", action="store_true", help="Generate only")
-    ask_p.add_argument("--show-source", action="store_true", default=True)
+    ask_p.add_argument("--hide-source", action="store_true", help="Don't print the generated program")
+    ask_p.add_argument("--live-reason", action="store_true", help="Use the real LLM for REASON (default: mock)")
     ask_p.add_argument("--save", help="Save generated program to a .forge file")
     ask_p.set_defaults(func=cmd_ask)
 

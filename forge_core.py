@@ -55,7 +55,7 @@ class Literal(ASTNode):
 
 @dataclass
 class Variable(ASTNode):
-    name: str
+    name: str  # "doc" or dotted path "doc.body" / "hits.0.title"
     node_type: str = field(default="variable")
 
 
@@ -112,7 +112,7 @@ class Filter(ASTNode):
 @dataclass
 class Step(ASTNode):
     step_name: str
-    action: Union[ToolCall, Filter, Reason]
+    action: Union[ToolCall, Filter, Reason, Verify]
     node_type: str = field(default="step")
 
 
@@ -355,7 +355,7 @@ def _parse_condition_string(s: str) -> Comparison:
     """Parse a simple condition string like '$sum > 0' or 'relevance > 0.8'."""
     s = s.strip()
     m = re.match(
-        r"^(\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|!=|==|>|<)\s*(.+)$",
+        r"^(\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|[A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|!=|==|>|<)\s*(.+)$",
         s,
     )
     if not m:
@@ -431,8 +431,11 @@ def validate_ast(node: ASTNode, path: str = "program") -> list[str]:
         elif isinstance(action, Reason):
             if not action.prompt or not action.output_var:
                 errors.append(f"{sp}.action: reason requires prompt and output_var")
+        elif isinstance(action, Verify):
+            if not isinstance(action.condition, Comparison):
+                errors.append(f"{sp}.action: verify.condition must be comparison")
         else:
-            errors.append(f"{sp}.action: must be tool_call, filter, or reason")
+            errors.append(f"{sp}.action: must be tool_call, filter, reason, or verify")
 
     if node.reason is not None:
         if not isinstance(node.reason, Reason):
@@ -461,6 +464,69 @@ def validate_dict(data: dict) -> list[str]:
     except ForgeError as e:
         return [str(e)]
     return validate_ast(node)
+
+
+def check_program(program: Program, tool_names: Optional[list] = None) -> list[str]:
+    """
+    Static checks in execution order: every $var is defined before use and
+    (if tool_names given) every TOOL exists. Runs before execution so a broken
+    program fails before spending any tool or LLM calls.
+    """
+    errors: list[str] = []
+    defined: set[str] = set()
+    known_tools = set(tool_names) if tool_names is not None else None
+
+    def use(name: str, where: str) -> None:
+        base = name.split(".", 1)[0]
+        if base not in defined:
+            hint = f" (defined so far: {', '.join(sorted(defined)) or 'none'})"
+            errors.append(f"{where}: ${name} used before it is defined{hint}")
+
+    def use_value(node: Any, where: str) -> None:
+        if isinstance(node, Variable):
+            use(node.name, where)
+        elif isinstance(node, ObjectLiteral):
+            for v in node.properties.values():
+                use_value(v, where)
+
+    def use_comparison(cond: Comparison, where: str) -> None:
+        # FILTER field refs (left_kind == "field") read list items, not memory
+        if cond.left_kind != "field":
+            use_value(cond.left, where)
+        use_value(cond.right, where)
+
+    def check_action(action: Any, where: str) -> None:
+        if isinstance(action, ToolCall):
+            if known_tools is not None and action.tool_name not in known_tools:
+                errors.append(
+                    f"{where}: unknown tool {action.tool_name!r} "
+                    f"(available: {', '.join(sorted(known_tools))})"
+                )
+            for v in action.inputs.values():
+                use_value(v, where)
+            defined.add(action.output_var)
+        elif isinstance(action, Filter):
+            use(action.input_var, where)
+            use_comparison(action.condition, where)
+            defined.add(action.output_var)
+        elif isinstance(action, Reason):
+            use(action.input_var, where)
+            defined.add(action.output_var)
+        elif isinstance(action, Verify):
+            use_comparison(action.condition, where)
+
+    if program.memory:
+        for entry in program.memory.entries:
+            use_value(entry.value, f"MEMORY {entry.key}")
+            defined.add(entry.key)
+    for step in program.steps:
+        check_action(step.action, f"STEP {step.step_name}")
+    if program.reason:
+        check_action(program.reason, "REASON")
+    if program.verify:
+        check_action(program.verify, "VERIFY")
+    use_value(program.return_stmt.value, "RETURN")
+    return errors
 
 
 # =============================================================================
@@ -535,12 +601,15 @@ class Lexer:
                 tokens.append(self._read_string(ch))
                 continue
 
-            # Variable $name
+            # Variable $name, with optional field/index path: $doc.body, $hits.0.title
             if ch == "$":
                 self._advance()
                 name = self._read_ident()
                 if not name:
                     raise ForgeLexError(f"Expected identifier after $ at {line}:{col}")
+                while self._peek() == "." and (self._peek(1).isalnum() or self._peek(1) == "_"):
+                    self._advance()
+                    name += "." + self._read_ident()
                 tokens.append(Token("VARIABLE", name, line, col))
                 continue
 
@@ -655,31 +724,10 @@ class Parser:
 
     def _expect(self, type_: str, value: Any = None) -> Token:
         tok = self._cur()
-        if tok.type != type_ and not (type_ == "KEYWORD" and tok.type == "KEYWORD" and tok.value == value):
-            if value is not None and not (tok.type == type_ and tok.value == value):
-                raise ForgeParseError(
-                    f"Expected {type_} {value!r}, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
-                )
-            if value is None and tok.type != type_:
-                raise ForgeParseError(
-                    f"Expected {type_}, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
-                )
-        if value is not None and tok.value != value and tok.type != type_:
-            pass
-        if value is not None and tok.type == type_ and tok.value != value:
-            # For KEYWORD matching value is required
-            if type_ == "KEYWORD":
-                raise ForgeParseError(
-                    f"Expected keyword {value}, got {tok.value} at {tok.line}:{tok.col}"
-                )
-        if type_ == "KEYWORD":
-            if tok.type != "KEYWORD" or (value is not None and tok.value != value):
-                raise ForgeParseError(
-                    f"Expected keyword {value}, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
-                )
-        elif tok.type != type_:
+        if tok.type != type_ or (value is not None and tok.value != value):
+            want = f"{type_} {value!r}" if value is not None else type_
             raise ForgeParseError(
-                f"Expected {type_}, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
+                f"Expected {want}, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
             )
         return self._advance()
 
@@ -699,28 +747,33 @@ class Parser:
 
         steps: list[Step] = []
 
-        # STEPs and interleaved REASON (think → act). Order is preserved.
+        # STEPs, REASON (think → act) and VERIFY (fail fast before costly
+        # steps) in any order. Order is preserved.
         while True:
             if self._match_keyword("STEP"):
                 steps.append(self._parse_step())
                 continue
             if self._match_keyword("REASON"):
                 # Mid-flow REASON becomes a step so later STEPs can use its output.
-                # Trailing REASON (no STEP after) is also stored as program.reason
-                # for backward-compatible AST shape.
                 r = self._parse_reason()
                 steps.append(
                     Step(step_name=f"reason_{len(steps)+1}", action=r)
                 )
                 continue
+            if self._match_keyword("VERIFY"):
+                v = self._parse_verify()
+                steps.append(Step(step_name=f"verify_{len(steps)+1}", action=v))
+                continue
             break
+
+        # The last VERIFY right before RETURN stays program.verify, keeping the
+        # AST shape of single-VERIFY programs unchanged.
+        verify = None
+        if steps and isinstance(steps[-1].action, Verify):
+            verify = steps.pop().action
 
         if not steps:
             raise ForgeParseError("At least one STEP is required")
-
-        verify = None
-        if self._match_keyword("VERIFY"):
-            verify = self._parse_verify()
 
         if not self._match_keyword("RETURN"):
             raise ForgeParseError(

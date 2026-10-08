@@ -6,8 +6,8 @@ MEMORY {
 
 STEP load TOOL read_file INPUT { path: $path } OUTPUT doc
 
-REASON "Summarize this document in two short bullets" ON $doc OUTPUT summary
+VERIFY $doc.chars > 0
 
-VERIFY $doc != null
+REASON "Summarize this document in two short bullets" ON $doc.body OUTPUT summary
 
-RETURN { path: $path, summary: $summary, chars: $doc }
+RETURN { path: $path, summary: $summary, chars: $doc.chars }
