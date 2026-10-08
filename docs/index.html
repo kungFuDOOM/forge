@@ -318,29 +318,31 @@
       </div>
       <div class="card">
         <div class="icon">🛠</div>
-        <h3>Real tools included</h3>
-        <p><code class="mono">http_get</code>, <code class="mono">read_file</code>, <code class="mono">write_file</code>, search &amp; sales mocks — run useful agents today.</p>
+        <h3>One call, not ten</h3>
+        <p>Agents run a whole fetch → check → summarize → save job in a single <code class="mono">forge_run</code> MCP call instead of a round trip per step. Web, file and data tools included.</p>
       </div>
     </div>
   </section>
 
   <section id="code">
     <h2 class="section-title">A complete agent program</h2>
-    <p class="section-sub">Think → act → verify → return. REASON can sit between STEPs.</p>
+    <p class="section-sub">Loop, think, act, verify, return. One program, one run.</p>
     <div class="split">
-      <pre class="mono" aria-label="Forge example program"><span class="kw">AGENT</span> <span class="str">"url-fetcher"</span>
+      <pre class="mono" aria-label="Forge example program"><span class="kw">AGENT</span> <span class="str">"page-digest"</span>
 
-<span class="kw">MEMORY</span> {
-  url: <span class="str">"https://example.com"</span>
-}
+<span class="kw">MEMORY</span> { urls: [<span class="str">"https://example.com"</span>, <span class="str">"https://iana.org"</span>] }
 
-<span class="kw">STEP</span> fetch <span class="kw">TOOL</span> http_get <span class="kw">INPUT</span> { url: <span class="var">$url</span> } <span class="kw">OUTPUT</span> page
+<span class="kw">FOR EACH</span> url <span class="kw">IN</span> <span class="var">$urls</span> <span class="kw">OUTPUT</span> digests
+  <span class="kw">STEP</span> fetch <span class="kw">TOOL</span> http_get <span class="kw">INPUT</span> { url: <span class="var">$url</span> } <span class="kw">OUTPUT</span> page
+  <span class="kw">IF</span> <span class="var">$page.status</span> == 200
+    <span class="kw">REASON</span> <span class="str">"One-sentence summary"</span> <span class="kw">ON</span> <span class="var">$page.text</span> <span class="kw">OUTPUT</span> s
+    <span class="kw">YIELD</span> { url: <span class="var">$url</span>, summary: <span class="var">$s</span> }
+  <span class="kw">END</span>
+<span class="kw">END</span>
 
-<span class="kw">REASON</span> <span class="str">"What is this page about?"</span> <span class="kw">ON</span> <span class="var">$page</span> <span class="kw">OUTPUT</span> summary
+<span class="kw">VERIFY</span> <span class="var">$digests</span> != []
 
-<span class="kw">VERIFY</span> <span class="var">$page</span> != null
-
-<span class="kw">RETURN</span> { url: <span class="var">$url</span>, summary: <span class="var">$summary</span> }</pre>
+<span class="kw">RETURN</span> <span class="var">$digests</span></pre>
       <div class="card">
         <h3>Primitives, not libraries</h3>
         <p>The language <em>is</em> the agent workflow.</p>
@@ -352,10 +354,13 @@
           <span class="pill mono">FILTER</span>
           <span class="pill mono">REASON</span>
           <span class="pill mono">VERIFY</span>
+          <span class="pill mono">FOR EACH</span>
+          <span class="pill mono">IF</span>
+          <span class="pill mono">YIELD</span>
           <span class="pill mono">RETURN</span>
         </div>
         <p style="margin-top:18px;color:var(--muted)">
-          Pipeline: <strong style="color:var(--text)">emit → repair → validate → run</strong>
+          Pipeline: <strong style="color:var(--text)">emit → repair → validate → check → run</strong>
         </p>
         <div class="row" style="margin-top:22px;margin-bottom:0">
           <a class="btn btn-ghost" href="https://github.com/kungFuDOOM/forge/blob/main/VISION.md">Read the vision</a>

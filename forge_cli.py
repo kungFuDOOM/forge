@@ -66,6 +66,10 @@ def _tools(args: argparse.Namespace):
     return tools
 
 
+def _limits(args: argparse.Namespace) -> dict:
+    return {"max_steps": args.max_steps, "max_seconds": args.timeout}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from forge_repair import try_compile_repaired
     from forge_runtime import run_forge, run_program, make_llm_client
@@ -84,9 +88,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             program, used, notes = try_compile_repaired(source)
             if notes and not args.quiet:
                 print(f"[repair] {', '.join(notes)}", file=sys.stderr)
-            result = run_program(program, tools=tools, llm=llm)
+            result = run_program(program, tools=tools, llm=llm, **_limits(args))
         else:
-            result = run_forge(source, tools=tools, llm=llm)
+            result = run_forge(source, tools=tools, llm=llm, **_limits(args))
     except Exception as e:
         print(_friendly_error(e), file=sys.stderr)
         return 1
@@ -208,7 +212,7 @@ STEP fetch TOOL http_get INPUT {{ url: $url }} OUTPUT page
 
 VERIFY $page.status == 200
 
-REASON "In one sentence, what is this page about?" ON $page.body OUTPUT summary
+REASON "In one sentence, what is this page about?" ON $page.text OUTPUT summary
 
 RETURN {{ url: $url, status: $page.status, summary: $summary }}
 '''
@@ -261,7 +265,7 @@ def cmd_spec(args: argparse.Namespace) -> int:
 def cmd_mcp(args: argparse.Namespace) -> int:
     from forge_mcp import ForgeMCPServer, serve
 
-    serve(ForgeMCPServer(tools=_tools(args), llm=args.llm))
+    serve(ForgeMCPServer(tools=_tools(args), llm=args.llm, limits=_limits(args)))
     return 0
 
 
@@ -290,7 +294,7 @@ def cmd_tools(args: argparse.Namespace) -> int:
         print(f"    {doc}")
     print("\nExample:")
     print('  STEP fetch TOOL http_get INPUT { url: "https://example.com" } OUTPUT page')
-    print('  REASON "Summarize" ON $page.body OUTPUT summary   # read one field')
+    print('  REASON "Summarize" ON $page.text OUTPUT summary   # read one field')
     print("\nAdd your own: ./forge run FILE.forge --tools my_tools.py")
     return 0
 
@@ -511,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("-q", "--quiet", action="store_true")
     tools_help = "Python file of extra tools (repeatable)"
     run_p.add_argument("--tools", action="append", help=tools_help)
+    run_p.add_argument("--max-steps", type=int, default=10_000, help="Stop after this many steps (default 10000)")
+    run_p.add_argument("--timeout", type=float, default=None, help="Stop after this many seconds")
     run_p.set_defaults(func=cmd_run)
 
     check_p = sub.add_parser("check", help="Validate a .forge program")
@@ -549,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
     mcp_p = sub.add_parser("mcp", help="Run as an MCP server over stdio (for AI agents)")
     mcp_p.add_argument("--tools", action="append", help=tools_help)
     mcp_p.add_argument("--llm", default="auto", help="Backend for REASON: auto|mock|ollama|openai")
+    mcp_p.add_argument("--max-steps", type=int, default=10_000, help="Per-run step budget")
+    mcp_p.add_argument("--timeout", type=float, default=300, help="Per-run time budget in seconds")
     mcp_p.set_defaults(func=cmd_mcp)
 
     tok_p = sub.add_parser("tokens", help="Estimate tokens vs Python/LangChain")

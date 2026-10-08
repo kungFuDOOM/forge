@@ -23,7 +23,7 @@ from typing import Any, Callable, Optional, TextIO
 from forge_core import check_program, compile_auto, validate_ast
 from forge_runtime import ToolRegistry, language_spec, make_llm_client, run_program
 
-SERVER_INFO = {"name": "forge", "version": "0.2.0"}
+SERVER_INFO = {"name": "forge", "version": "0.3.0"}
 DEFAULT_PROTOCOL = "2024-11-05"
 
 
@@ -66,9 +66,16 @@ def _tool_defs(tools: ToolRegistry) -> list[dict]:
 
 
 class ForgeMCPServer:
-    def __init__(self, tools: Optional[ToolRegistry] = None, llm: str = "auto") -> None:
+    def __init__(
+        self,
+        tools: Optional[ToolRegistry] = None,
+        llm: str = "auto",
+        limits: Optional[dict] = None,
+    ) -> None:
         self.tools = tools or ToolRegistry()
         self.llm = llm
+        # A runaway program must not hang the calling agent
+        self.limits = limits or {"max_steps": 10_000, "max_seconds": 300}
         self.methods: dict[str, Callable[[dict], Any]] = {
             "initialize": self._initialize,
             "ping": lambda _p: {},
@@ -113,7 +120,7 @@ class ForgeMCPServer:
                 return _text(f"OK  agent={program.agent.name!r}  steps={len(program.steps)}")
             if name == "forge_run":
                 llm = make_llm_client(args.get("llm") or self.llm)
-                result = run_program(program, tools=self.tools, llm=llm)
+                result = run_program(program, tools=self.tools, llm=llm, **self.limits)
                 return _text(json.dumps(result, indent=2, default=str))
         except Exception as e:
             return _text(f"{type(e).__name__}: {e}", error=True)

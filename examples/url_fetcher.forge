@@ -8,6 +8,6 @@ STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
 
 VERIFY $page.status == 200
 
-REASON "In one sentence, what is this page about?" ON $page.body OUTPUT summary
+REASON "In one sentence, what is this page about?" ON $page.text OUTPUT summary
 
 RETURN { url: $url, status: $page.status, summary: $summary }

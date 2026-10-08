@@ -1,0 +1,22 @@
+AGENT "deal-triage"
+
+MEMORY {
+  region: "north"
+  watchlist: ["Acme", "Gamma Inc"]
+}
+
+STEP get TOOL sales_data INPUT { region: $region, period: "Q4" } OUTPUT deals
+
+VERIFY $deals != []
+
+FOR EACH d IN $deals OUTPUT flagged
+  IF $d.amount > 10000 AND $watchlist CONTAINS $d.deal
+    REASON "In one line, why does this deal need attention?" ON $d OUTPUT why
+    YIELD { deal: $d.deal, amount: $d.amount, why: $why }
+  END
+END
+
+STEP top TOOL sort INPUT { list: $flagged, by: "amount", desc: true } OUTPUT ranked
+STEP total TOOL sum INPUT { list: $flagged, field: "amount" } OUTPUT at_stake
+
+RETURN { flagged: $ranked, at_stake: $at_stake }

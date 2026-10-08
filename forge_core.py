@@ -81,6 +81,17 @@ class Comparison(ASTNode):
 
 
 @dataclass
+class Logical(ASTNode):
+    operator: str  # "AND" | "OR"
+    left: Any  # Comparison | Logical
+    right: Any
+    node_type: str = field(default="logical")
+
+
+CONDITION_OPS = (">", "<", ">=", "<=", "==", "!=", "CONTAINS")
+
+
+@dataclass
 class MemoryEntry(ASTNode):
     key: str
     value: ASTNode
@@ -118,7 +129,7 @@ class Filter(ASTNode):
 @dataclass
 class Step(ASTNode):
     step_name: str
-    action: Union[ToolCall, Filter, Reason, Verify]
+    action: Union[ToolCall, Filter, Reason, Verify, "ForEach", "If", "Yield"]
     node_type: str = field(default="step")
 
 
@@ -134,6 +145,29 @@ class Reason(ASTNode):
 class Verify(ASTNode):
     condition: Comparison
     node_type: str = field(default="verify")
+
+
+@dataclass
+class ForEach(ASTNode):
+    var: str  # loop variable name (without $)
+    source: ASTNode  # list to iterate
+    body: list  # Step
+    output_var: Optional[str] = None  # list of YIELDed values (or last output)
+    node_type: str = field(default="for_each")
+
+
+@dataclass
+class If(ASTNode):
+    condition: Any  # Comparison | Logical
+    then: list  # Step
+    else_: list  # Step
+    node_type: str = field(default="if")
+
+
+@dataclass
+class Yield(ASTNode):
+    value: ASTNode
+    node_type: str = field(default="yield")
 
 
 @dataclass
@@ -213,6 +247,21 @@ def _ast_to_dict(node: Any) -> Any:
         d["condition"] = _ast_to_dict(node.condition)
     elif isinstance(node, Return):
         d["value"] = _ast_to_dict(node.value)
+    elif isinstance(node, Logical):
+        d["operator"] = node.operator
+        d["left"] = _ast_to_dict(node.left)
+        d["right"] = _ast_to_dict(node.right)
+    elif isinstance(node, ForEach):
+        d["var"] = node.var
+        d["source"] = _ast_to_dict(node.source)
+        d["body"] = [_ast_to_dict(s) for s in node.body]
+        d["output_var"] = node.output_var
+    elif isinstance(node, If):
+        d["condition"] = _ast_to_dict(node.condition)
+        d["then"] = [_ast_to_dict(s) for s in node.then]
+        d["else"] = [_ast_to_dict(s) for s in node.else_]
+    elif isinstance(node, Yield):
+        d["value"] = _ast_to_dict(node.value)
     elif isinstance(node, Program):
         d["agent"] = _ast_to_dict(node.agent)
         d["memory"] = _ast_to_dict(node.memory)
@@ -274,7 +323,7 @@ def dict_to_ast(data: Any) -> ASTNode:
         else:
             left = dict_to_ast(left_raw) if isinstance(left_raw, dict) else left_raw
         op = data.get("operator")
-        if op not in (">", "<", ">=", "<=", "==", "!="):
+        if op not in CONDITION_OPS:
             raise ForgeValidateError(f"Invalid comparison operator: {op}")
         right = dict_to_ast(data["right"]) if isinstance(data.get("right"), dict) else data.get("right")
         if not isinstance(right, ASTNode):
@@ -342,6 +391,39 @@ def dict_to_ast(data: Any) -> ASTNode:
 
     if nt == "return":
         return Return(value=dict_to_ast(data["value"]))
+
+    if nt == "logical":
+        op = data.get("operator")
+        if op not in ("AND", "OR"):
+            raise ForgeValidateError(f"logical.operator must be AND or OR, got {op!r}")
+        return Logical(operator=op, left=dict_to_ast(data.get("left")), right=dict_to_ast(data.get("right")))
+
+    if nt == "for_each":
+        var = data.get("var")
+        if not isinstance(var, str) or not var:
+            raise ForgeValidateError("for_each.var must be a non-empty string")
+        body = data.get("body")
+        if not isinstance(body, list) or not body:
+            raise ForgeValidateError("for_each.body must be a non-empty list of steps")
+        return ForEach(
+            var=var.lstrip("$"),
+            source=dict_to_ast(data.get("source")),
+            body=[dict_to_ast(s) for s in body],
+            output_var=data.get("output_var") or None,
+        )
+
+    if nt == "if":
+        then = data.get("then")
+        if not isinstance(then, list) or not then:
+            raise ForgeValidateError("if.then must be a non-empty list of steps")
+        return If(
+            condition=dict_to_ast(data.get("condition")),
+            then=[dict_to_ast(s) for s in then],
+            else_=[dict_to_ast(s) for s in data.get("else") or []],
+        )
+
+    if nt == "yield":
+        return Yield(value=dict_to_ast(data.get("value")))
 
     if nt == "program":
         memory = data.get("memory")
@@ -424,32 +506,54 @@ def validate_ast(node: ASTNode, path: str = "program") -> list[str]:
     if not node.steps:
         err("at least one STEP required")
 
-    for i, step in enumerate(node.steps):
-        sp = f"{path}.steps[{i}]"
-        if not isinstance(step, Step):
-            errors.append(f"{sp}: expected step node")
-            continue
-        if not step.step_name:
-            errors.append(f"{sp}: step_name required")
-        action = step.action
-        if isinstance(action, ToolCall):
-            if not action.tool_name:
-                errors.append(f"{sp}.action: tool_name required")
-            if not action.output_var:
-                errors.append(f"{sp}.action: output_var required")
-        elif isinstance(action, Filter):
-            if not action.output_var or not action.input_var:
-                errors.append(f"{sp}.action: input_var and output_var required")
-            if not isinstance(action.condition, Comparison):
-                errors.append(f"{sp}.action: condition must be comparison")
-        elif isinstance(action, Reason):
-            if not action.prompt or not action.output_var:
-                errors.append(f"{sp}.action: reason requires prompt and output_var")
-        elif isinstance(action, Verify):
-            if not isinstance(action.condition, Comparison):
-                errors.append(f"{sp}.action: verify.condition must be comparison")
-        else:
-            errors.append(f"{sp}.action: must be tool_call, filter, reason, or verify")
+    def is_condition(c: Any) -> bool:
+        if isinstance(c, Logical):
+            return c.operator in ("AND", "OR") and is_condition(c.left) and is_condition(c.right)
+        return isinstance(c, Comparison)
+
+    def check_steps(steps: list, sp_base: str) -> None:
+        for i, step in enumerate(steps):
+            sp = f"{sp_base}[{i}]"
+            if not isinstance(step, Step):
+                errors.append(f"{sp}: expected step node")
+                continue
+            if not step.step_name:
+                errors.append(f"{sp}: step_name required")
+            action = step.action
+            if isinstance(action, ToolCall):
+                if not action.tool_name:
+                    errors.append(f"{sp}.action: tool_name required")
+                if not action.output_var:
+                    errors.append(f"{sp}.action: output_var required")
+            elif isinstance(action, Filter):
+                if not action.output_var or not action.input_var:
+                    errors.append(f"{sp}.action: input_var and output_var required")
+                if not is_condition(action.condition):
+                    errors.append(f"{sp}.action: condition must be comparison")
+            elif isinstance(action, Reason):
+                if not action.prompt or not action.output_var:
+                    errors.append(f"{sp}.action: reason requires prompt and output_var")
+            elif isinstance(action, Verify):
+                if not is_condition(action.condition):
+                    errors.append(f"{sp}.action: verify.condition must be comparison")
+            elif isinstance(action, ForEach):
+                if not action.body:
+                    errors.append(f"{sp}.action: FOR body must not be empty")
+                check_steps(action.body, f"{sp}.body")
+            elif isinstance(action, If):
+                if not is_condition(action.condition):
+                    errors.append(f"{sp}.action: IF condition must be comparison")
+                if not action.then:
+                    errors.append(f"{sp}.action: IF body must not be empty")
+                check_steps(action.then, f"{sp}.then")
+                check_steps(action.else_, f"{sp}.else")
+            elif isinstance(action, Yield):
+                if action.value is None:
+                    errors.append(f"{sp}.action: YIELD needs a value")
+            else:
+                errors.append(f"{sp}.action: must be tool_call, filter, reason, verify, for_each, if, or yield")
+
+    check_steps(node.steps, f"{path}.steps")
 
     if node.reason is not None:
         if not isinstance(node.reason, Reason):
@@ -460,7 +564,7 @@ def validate_ast(node: ASTNode, path: str = "program") -> list[str]:
     if node.verify is not None:
         if not isinstance(node.verify, Verify):
             err("verify must be verify node")
-        elif not isinstance(node.verify.condition, Comparison):
+        elif not is_condition(node.verify.condition):
             err("verify.condition must be comparison")
 
     if not isinstance(node.return_stmt, Return):
@@ -487,32 +591,43 @@ def check_program(program: Program, tool_names: Optional[list] = None) -> list[s
     program fails before spending any tool or LLM calls.
     """
     errors: list[str] = []
-    defined: set[str] = set()
     known_tools = set(tool_names) if tool_names is not None else None
 
-    def use(name: str, where: str) -> None:
+    def use(name: str, where: str, defined: set) -> None:
         base = name.split(".", 1)[0]
         if base not in defined:
             hint = f" (defined so far: {', '.join(sorted(defined)) or 'none'})"
             errors.append(f"{where}: ${name} used before it is defined{hint}")
 
-    def use_value(node: Any, where: str) -> None:
+    def use_value(node: Any, where: str, defined: set) -> None:
         if isinstance(node, Variable):
-            use(node.name, where)
+            use(node.name, where, defined)
         elif isinstance(node, ObjectLiteral):
             for v in node.properties.values():
-                use_value(v, where)
+                use_value(v, where, defined)
         elif isinstance(node, ArrayLiteral):
             for v in node.items:
-                use_value(v, where)
+                use_value(v, where, defined)
 
-    def use_comparison(cond: Comparison, where: str) -> None:
-        # FILTER field refs (left_kind == "field") read list items, not memory
-        if cond.left_kind != "field":
-            use_value(cond.left, where)
-        use_value(cond.right, where)
+    def use_condition(cond: Any, where: str, defined: set, in_filter: bool = False) -> None:
+        if isinstance(cond, Logical):
+            use_condition(cond.left, where, defined, in_filter)
+            use_condition(cond.right, where, defined, in_filter)
+        elif isinstance(cond, Comparison):
+            if cond.left_kind == "field":
+                # In FILTER a bare name is a field of each item; elsewhere it
+                # can only mean a memory variable
+                if not in_filter:
+                    use(str(cond.left), where, defined)
+            else:
+                use_value(cond.left, where, defined)
+            use_value(cond.right, where, defined)
 
-    def check_action(action: Any, where: str) -> None:
+    def check_block(steps: list, defined: set, in_loop: bool) -> None:
+        for step in steps:
+            check_action(step.action, f"STEP {step.step_name}", defined, in_loop)
+
+    def check_action(action: Any, where: str, defined: set, in_loop: bool) -> None:
         if isinstance(action, ToolCall):
             if known_tools is not None and action.tool_name not in known_tools:
                 errors.append(
@@ -520,29 +635,46 @@ def check_program(program: Program, tool_names: Optional[list] = None) -> list[s
                     f"(available: {', '.join(sorted(known_tools))})"
                 )
             for v in action.inputs.values():
-                use_value(v, where)
+                use_value(v, where, defined)
             defined.add(action.output_var)
         elif isinstance(action, Filter):
-            use(action.input_var, where)
-            use_comparison(action.condition, where)
+            use(action.input_var, where, defined)
+            use_condition(action.condition, where, defined, in_filter=True)
             defined.add(action.output_var)
         elif isinstance(action, Reason):
-            use(action.input_var, where)
+            use(action.input_var, where, defined)
             defined.add(action.output_var)
         elif isinstance(action, Verify):
-            use_comparison(action.condition, where)
+            use_condition(action.condition, where, defined)
+        elif isinstance(action, ForEach):
+            use_value(action.source, f"FOR {action.var}", defined)
+            # Loop body is its own scope; only OUTPUT is visible afterwards
+            check_block(action.body, defined | {action.var}, True)
+            if action.output_var:
+                defined.add(action.output_var)
+        elif isinstance(action, If):
+            use_condition(action.condition, "IF", defined)
+            then_defs, else_defs = set(defined), set(defined)
+            check_block(action.then, then_defs, in_loop)
+            check_block(action.else_, else_defs, in_loop)
+            # Visible after END only if set on every path
+            defined |= then_defs & else_defs
+        elif isinstance(action, Yield):
+            if not in_loop:
+                errors.append(f"{where}: YIELD is only allowed inside FOR EACH ... END")
+            use_value(action.value, "YIELD", defined)
 
+    defined: set[str] = set()
     if program.memory:
         for entry in program.memory.entries:
-            use_value(entry.value, f"MEMORY {entry.key}")
+            use_value(entry.value, f"MEMORY {entry.key}", defined)
             defined.add(entry.key)
-    for step in program.steps:
-        check_action(step.action, f"STEP {step.step_name}")
+    check_block(program.steps, defined, False)
     if program.reason:
-        check_action(program.reason, "REASON")
+        check_action(program.reason, "REASON", defined, False)
     if program.verify:
-        check_action(program.verify, "VERIFY")
-    use_value(program.return_stmt.value, "RETURN")
+        check_action(program.verify, "VERIFY", defined, False)
+    use_value(program.return_stmt.value, "RETURN", defined)
     return errors
 
 
@@ -553,6 +685,8 @@ def check_program(program: Program, tool_names: Optional[list] = None) -> list[s
 KEYWORDS = {
     "AGENT", "MEMORY", "STEP", "TOOL", "FILTER", "INPUT", "OUTPUT",
     "ON", "REASON", "VERIFY", "RETURN",
+    "FOR", "EACH", "IN", "IF", "ELSE", "END", "YIELD",
+    "AND", "OR", "CONTAINS",
     "true", "false", "null",
 }
 
@@ -762,26 +896,7 @@ class Parser:
             mem_entries.extend(block.entries)
         memory = MemoryBlock(entries=mem_entries) if mem_entries else None
 
-        steps: list[Step] = []
-
-        # STEPs, REASON (think → act) and VERIFY (fail fast before costly
-        # steps) in any order. Order is preserved.
-        while True:
-            if self._match_keyword("STEP"):
-                steps.append(self._parse_step())
-                continue
-            if self._match_keyword("REASON"):
-                # Mid-flow REASON becomes a step so later STEPs can use its output.
-                r = self._parse_reason()
-                steps.append(
-                    Step(step_name=f"reason_{len(steps)+1}", action=r)
-                )
-                continue
-            if self._match_keyword("VERIFY"):
-                v = self._parse_verify()
-                steps.append(Step(step_name=f"verify_{len(steps)+1}", action=v))
-                continue
-            break
+        steps = self._parse_block()
 
         # The last VERIFY right before RETURN stays program.verify, keeping the
         # AST shape of single-VERIFY programs unchanged.
@@ -793,9 +908,10 @@ class Parser:
             raise ForgeParseError("At least one STEP is required")
 
         if not self._match_keyword("RETURN"):
+            tok = self._cur()
+            hint = " (END/ELSE without a matching FOR or IF)" if tok.value in ("END", "ELSE") else ""
             raise ForgeParseError(
-                f"Expected RETURN, got {self._cur().type} {self._cur().value!r} "
-                f"at {self._cur().line}:{self._cur().col}"
+                f"Expected RETURN, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}{hint}"
             )
         return_stmt = self._parse_return()
 
@@ -813,6 +929,72 @@ class Parser:
             verify=verify,
             return_stmt=return_stmt,
         )
+
+    def _parse_block(self) -> list:
+        """STEP / REASON / VERIFY / FOR / IF / YIELD in any order, until anything else."""
+        steps: list[Step] = []
+        while True:
+            n = len(steps) + 1
+            if self._match_keyword("STEP"):
+                steps.append(self._parse_step())
+            elif self._match_keyword("REASON"):
+                # Mid-flow REASON becomes a step so later STEPs can use its output.
+                steps.append(Step(step_name=f"reason_{n}", action=self._parse_reason()))
+            elif self._match_keyword("VERIFY"):
+                steps.append(Step(step_name=f"verify_{n}", action=self._parse_verify()))
+            elif self._match_keyword("FOR"):
+                steps.append(Step(step_name=f"for_{n}", action=self._parse_for()))
+            elif self._match_keyword("IF"):
+                steps.append(Step(step_name=f"if_{n}", action=self._parse_if()))
+            elif self._match_keyword("YIELD"):
+                self._advance()
+                steps.append(Step(step_name=f"yield_{n}", action=Yield(value=self._parse_value())))
+            else:
+                return steps
+
+    def _parse_for(self) -> ForEach:
+        """FOR EACH item IN $list [OUTPUT results] ... END"""
+        start = self._expect("KEYWORD", "FOR")
+        if self._match_keyword("EACH"):
+            self._advance()
+        tok = self._cur()
+        if tok.type not in ("IDENT", "VARIABLE") or "." in str(tok.value):
+            raise ForgeParseError(f"Expected loop variable name after FOR EACH at {tok.line}:{tok.col}")
+        var = self._advance().value
+        self._expect("KEYWORD", "IN")
+        source = self._parse_value()
+        output_var = None
+        if self._match_keyword("OUTPUT"):
+            self._advance()
+            output_var = self._expect("IDENT").value
+        body = self._parse_block()
+        self._expect_end("FOR", start)
+        if not body:
+            raise ForgeParseError(f"FOR EACH at {start.line}:{start.col} has an empty body")
+        return ForEach(var=var, source=source, body=body, output_var=output_var)
+
+    def _parse_if(self) -> If:
+        """IF condition ... [ELSE ...] END"""
+        start = self._expect("KEYWORD", "IF")
+        condition = self._parse_condition()
+        then = self._parse_block()
+        else_: list = []
+        if self._match_keyword("ELSE"):
+            self._advance()
+            else_ = self._parse_block()
+        self._expect_end("IF", start)
+        if not then:
+            raise ForgeParseError(f"IF at {start.line}:{start.col} has an empty body")
+        return If(condition=condition, then=then, else_=else_)
+
+    def _expect_end(self, opener: str, start: Token) -> None:
+        if not self._match_keyword("END"):
+            tok = self._cur()
+            raise ForgeParseError(
+                f"Expected END to close {opener} from {start.line}:{start.col}, "
+                f"got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
+            )
+        self._advance()
 
     def _parse_agent(self) -> AgentDecl:
         self._expect("KEYWORD", "AGENT")
@@ -916,7 +1098,7 @@ class Parser:
 
     def _parse_filter(self) -> Filter:
         self._expect("KEYWORD", "FILTER")
-        condition = self._parse_comparison()
+        condition = self._parse_condition()
         self._expect("KEYWORD", "ON")
         input_var = self._expect("VARIABLE").value
         self._expect("KEYWORD", "OUTPUT")
@@ -941,13 +1123,28 @@ class Parser:
 
     def _parse_verify(self) -> Verify:
         self._expect("KEYWORD", "VERIFY")
-        condition = self._parse_comparison()
+        condition = self._parse_condition()
         return Verify(condition=condition)
 
     def _parse_return(self) -> Return:
         self._expect("KEYWORD", "RETURN")
         value = self._parse_value()
         return Return(value=value)
+
+    def _parse_condition(self) -> Any:
+        """comparison [AND|OR comparison]...  — AND binds tighter than OR."""
+        left = self._parse_and()
+        while self._match_keyword("OR"):
+            self._advance()
+            left = Logical(operator="OR", left=left, right=self._parse_and())
+        return left
+
+    def _parse_and(self) -> Any:
+        left = self._parse_comparison()
+        while self._match_keyword("AND"):
+            self._advance()
+            left = Logical(operator="AND", left=left, right=self._parse_comparison())
+        return left
 
     def _parse_comparison(self) -> Comparison:
         """Parse left OP right. Left may be $var, field name, or literal."""
@@ -970,6 +1167,9 @@ class Parser:
             )
 
         op_tok = self._cur()
+        if op_tok.type == "KEYWORD" and op_tok.value == "CONTAINS":
+            self._advance()
+            return Comparison(left=left, operator="CONTAINS", right=self._parse_value(), left_kind=left_kind)
         if op_tok.type != "OP":
             raise ForgeParseError(
                 f"Expected comparison operator, got {op_tok.type} {op_tok.value!r} "
@@ -1152,6 +1352,30 @@ REASON "Create an engaging tweet about this topic based on the articles" ON $art
 VERIFY $tweet != ""
 
 RETURN { tweet: $tweet, source_count: 3 }
+''',
+    "deal-triage": '''
+AGENT "deal-triage"
+
+MEMORY {
+  region: "north"
+  watchlist: ["Acme", "Gamma Inc"]
+}
+
+STEP get TOOL sales_data INPUT { region: $region, period: "Q4" } OUTPUT deals
+
+VERIFY $deals != []
+
+FOR EACH d IN $deals OUTPUT flagged
+  IF $d.amount > 10000 AND $watchlist CONTAINS $d.deal
+    REASON "In one line, why does this deal need attention?" ON $d OUTPUT why
+    YIELD { deal: $d.deal, amount: $d.amount, why: $why }
+  END
+END
+
+STEP top TOOL sort INPUT { list: $flagged, by: "amount", desc: true } OUTPUT ranked
+STEP total TOOL sum INPUT { list: $flagged, field: "amount" } OUTPUT at_stake
+
+RETURN { flagged: $ranked, at_stake: $at_stake }
 ''',
 }
 

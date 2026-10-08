@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
@@ -39,20 +38,15 @@ from forge_core import (
     EXAMPLES,
     compile_auto,
     compile_forge,
-    ForgeError,
-    ast_to_json,
     _ast_to_dict,
 )
 from forge_runtime import (
     ToolRegistry,
     MockLLMClient,
     OllamaLLMClient,
-    OpenAILLMClient,
     Evaluator,
-    ForgeRuntimeError,
     ForgeVerifyError,
     ollama_available,
-    make_llm_client,
 )
 
 
@@ -81,6 +75,9 @@ Rules:
 - MEMORY uses braces: MEMORY { a: 1 b: 2 }; lists use brackets: [1, 2]
 - Read a field of a result: $page.body, $hits.0.title
 - VERIFY may appear between STEPs to stop early.
+- Loop: FOR EACH x IN $list OUTPUT out ... YIELD { k: $x.f } ... END
+- Branch: IF $x > 1 AND $y CONTAINS "a" ... ELSE ... END
+- Data tools: count, pick, sort, sum, join, format, calc, extract_text.
 - At least one STEP. RETURN is last.
 - Tools available: arithmetic_add, web_search, get_value, sales_data.
 - No markdown. No explanation. Stop after RETURN.
@@ -276,6 +273,8 @@ filter action: {"node_type":"filter","condition":{"node_type":"comparison","left
 reason: {"node_type":"reason","prompt":"...","input_var":"sum","output_var":"note"}
 verify: {"node_type":"verify","condition":{"node_type":"comparison","left":{"node_type":"variable","name":"sum"},"operator":">","right":{"node_type":"literal","value":0},"left_kind":"expr"}}
 return: {"node_type":"return","value":{"node_type":"object_literal","properties":{"total":{"node_type":"variable","name":"sum"}}}}
+loop action: {"node_type":"for_each","var":"d","source":{"node_type":"variable","name":"deals"},"body":[<steps>],"output_var":"out"}; inside: {"node_type":"yield","value":<value>}
+branch action: {"node_type":"if","condition":<comparison or {"node_type":"logical","operator":"AND","left":..,"right":..}>,"then":[<steps>],"else":[]}
 No markdown. JSON only.
 """.strip()
 

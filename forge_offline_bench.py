@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, asdict
 from typing import Any, Callable, Optional
 
-from forge_core import EXAMPLES, compile_auto, compile_forge, ForgeError
+from forge_core import EXAMPLES, compile_auto, compile_forge
 from forge_runtime import (
     Evaluator,
     MockLLMClient,

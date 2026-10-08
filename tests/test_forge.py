@@ -64,7 +64,7 @@ class TestExamples(unittest.TestCase):
     def test_example_files_run(self):
         tools = ToolRegistry()
         # Offline stand-in for the network tool
-        tools.register("http_get", lambda i: {"status": 200, "url": i["url"], "body": "<h1>Example</h1>"})
+        tools.register("http_get", lambda i: {"status": 200, "url": i["url"], "body": "<h1>Example</h1>", "text": "Example"})
         cwd = os.getcwd()
         os.chdir(ROOT)
         try:
@@ -388,7 +388,7 @@ class TestSpec(unittest.TestCase):
         spec = language_spec()
         for needle in ("AGENT", "VERIFY", "$var.field", "http_get", "write_file"):
             self.assertIn(needle, spec)
-        self.assertLess(len(spec) // 4, 600, "spec should stay small enough to keep in context")
+        self.assertLess(len(spec) // 4, 900, "spec should stay small enough to keep in context")
 
 
 class TestMCP(unittest.TestCase):
@@ -499,6 +499,287 @@ class TestCLI(unittest.TestCase):
                     out = Path(tmp) / f"{template}.forge"
                     self.assertEqual(main(["init", "demo", "-o", str(out), "--template", template]), 0)
                     self.assertEqual(main(["check", str(out)]), 0)
+
+
+
+TRIAGE = '''
+AGENT "triage"
+MEMORY { region: "north", watch: ["Acme", "Gamma Inc"] }
+STEP get TOOL sales_data INPUT { region: $region, period: "Q4" } OUTPUT deals
+FOR EACH d IN $deals OUTPUT flagged
+  IF $d.amount > 10000 AND $watch CONTAINS $d.deal
+    YIELD $d.deal
+  ELSE
+    IF $d.deal CONTAINS "DELTA" OR $d.amount < 0
+      YIELD "small"
+    END
+  END
+END
+RETURN $flagged
+'''
+
+
+class TestLoopsAndBranches(unittest.TestCase):
+    def test_for_if_else_yield_and_or_contains(self):
+        self.assertEqual(run(TRIAGE), ["Acme", "Gamma Inc", "small"])
+
+    def test_implicit_collect_without_yield(self):
+        out = run('''
+AGENT "x"
+MEMORY { xs: [1, 2, 3] }
+FOR EACH n IN $xs OUTPUT doubled
+  STEP d TOOL calc INPUT { op: "mul", x: $n, y: 2 } OUTPUT twice
+END
+RETURN $doubled
+''')
+        self.assertEqual(out, [2, 4, 6])
+
+    def test_nested_loops_and_loop_var_with_dollar(self):
+        out = run('''
+AGENT "grid"
+MEMORY { rows: [1, 2], cols: [10, 20] }
+FOR EACH $r IN $rows OUTPUT grid
+  FOR EACH c IN $cols OUTPUT cells
+    STEP s TOOL arithmetic_add INPUT { x: $r, y: $c } OUTPUT cell
+  END
+  YIELD $cells
+END
+RETURN $grid
+''')
+        self.assertEqual(out, [[11, 21], [12, 22]])
+
+    def test_loop_over_object_gives_key_value(self):
+        out = run('''
+AGENT "kv"
+MEMORY { o: { a: 1, b: 2 } }
+FOR EACH e IN $o OUTPUT keys
+  YIELD $e.key
+END
+RETURN $keys
+''')
+        self.assertEqual(out, ["a", "b"])
+
+    def test_loop_body_is_scoped(self):
+        src = '''
+AGENT "scope"
+MEMORY { xs: [1] }
+FOR EACH n IN $xs OUTPUT out
+  STEP s TOOL get_value INPUT {} OUTPUT inner
+END
+RETURN $inner
+'''
+        with self.assertRaisesRegex(ForgeCheckError, r"\$inner used before it is defined"):
+            run(src)
+
+    def test_if_defines_only_what_every_branch_defines(self):
+        base = '''
+AGENT "branch"
+MEMORY { n: 5 }
+IF $n > 3
+  STEP a TOOL get_value INPUT {} OUTPUT v
+{else}END
+RETURN $v
+'''
+        with self.assertRaises(ForgeCheckError):
+            run(base.replace("{else}", ""))
+        self.assertEqual(run(base.replace("{else}", "ELSE\n  STEP b TOOL get_value INPUT {} OUTPUT v\n")), 42)
+
+    def test_yield_outside_loop_rejected(self):
+        with self.assertRaisesRegex(ForgeCheckError, "YIELD is only allowed inside FOR"):
+            run('AGENT "y"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nYIELD $v\nRETURN $v')
+
+    def test_bare_name_in_if_is_checked(self):
+        with self.assertRaisesRegex(ForgeCheckError, r"\$missing used before"):
+            run('AGENT "y"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nIF missing > 1\nYIELD 1\nEND\nRETURN $v')
+
+    def test_parse_errors_name_the_problem(self):
+        with self.assertRaisesRegex(ForgeParseError, "Expected END to close FOR"):
+            compile_forge('AGENT "e"\nMEMORY { xs: [1] }\nFOR EACH x IN $xs\nSTEP s TOOL get_value INPUT {} OUTPUT v\nRETURN 1')
+        with self.assertRaisesRegex(ForgeParseError, "without a matching FOR or IF"):
+            compile_forge('AGENT "e"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nEND\nRETURN 1')
+
+    def test_json_roundtrip_with_loops(self):
+        prog = compile_forge(TRIAGE)
+        again = compile_forge_json(_ast_to_dict(prog))
+        self.assertEqual(_ast_to_dict(again), _ast_to_dict(prog))
+        self.assertEqual(run_program(again, ToolRegistry(), MockLLMClient()), ["Acme", "Gamma Inc", "small"])
+
+    def test_filter_with_and(self):
+        out = run('''
+AGENT "f"
+STEP get TOOL sales_data INPUT { region: "n", period: "Q1" } OUTPUT deals
+STEP big FILTER amount > 6000 AND deal CONTAINS "co" ON $deals OUTPUT hits
+RETURN $hits
+''')
+        self.assertEqual([d["deal"] for d in out], ["BetaCo"])
+
+    def test_verify_failure_shows_value(self):
+        with self.assertRaisesRegex(ForgeVerifyError, "left side was 42"):
+            run('AGENT "v"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nVERIFY $v > 100\nRETURN $v')
+
+    def test_lowercase_loop_is_repaired(self):
+        src = """agent triage
+memory { region: "north", input: 3 }
+step get tool sales_data input { region: $region, period: "Q4" } output end
+for each d in $end output big
+  if $d.amount > 10000 and $d.deal contains "a"
+    yield $d.deal
+  end
+end
+verify $input == 3
+return { big: $big, n: $input }"""
+        prog, _, _ = try_compile_repaired(src)
+        self.assertEqual(run_program(prog, ToolRegistry(), MockLLMClient()), {"big": ["Acme", "Gamma Inc"], "n": 3})
+
+
+class TestLimits(unittest.TestCase):
+    SPIN = '''
+AGENT "spin"
+MEMORY { xs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }
+FOR EACH a IN $xs
+  FOR EACH b IN $xs
+    STEP s TOOL get_value INPUT {} OUTPUT v
+  END
+END
+RETURN 1
+'''
+
+    def test_step_budget(self):
+        self.assertEqual(run_forge(self.SPIN, max_steps=1000), 1)
+        with self.assertRaisesRegex(ForgeRuntimeError, "Step budget exceeded"):
+            run_forge(self.SPIN, max_steps=50)
+
+    def test_time_budget(self):
+        tools = ToolRegistry()
+        import time as _time
+
+        tools.register("slow", lambda i: _time.sleep(0.05) or 1)
+        src = self.SPIN.replace("TOOL get_value", "TOOL slow")
+        with self.assertRaisesRegex(ForgeRuntimeError, "Time budget exceeded"):
+            run_forge(src, tools=tools, max_seconds=0.2)
+
+    def test_reason_context_is_capped(self):
+        from forge_runtime import REASON_CONTEXT_CHARS
+
+        seen = {}
+
+        class Spy(MockLLMClient):
+            def complete(self, prompt, context=None):
+                seen["context"] = context
+                return "ok"
+
+        tools = ToolRegistry()
+        tools.register("big", lambda i: "x" * (REASON_CONTEXT_CHARS + 500))
+        run_forge('AGENT "b"\nSTEP s TOOL big INPUT {} OUTPUT t\nREASON "sum" ON $t OUTPUT r\nRETURN $r', tools=tools, llm=Spy())
+        self.assertIn("truncated 500 chars", seen["context"])
+        self.assertLess(len(seen["context"]), REASON_CONTEXT_CHARS + 100)
+
+
+class TestDataTools(unittest.TestCase):
+    def setUp(self):
+        self.t = ToolRegistry()
+        self.deals = [{"n": "a", "v": 3}, {"n": "b", "v": None}, {"n": "c", "v": 7}]
+
+    def test_list_tools(self):
+        t = self.t
+        self.assertEqual(t.call("count", {"list": self.deals}), 3)
+        self.assertEqual(t.call("pick", {"list": self.deals, "field": "n"}), ["a", "b", "c"])
+        self.assertEqual([d["n"] for d in t.call("sort", {"list": self.deals, "by": "v", "desc": True})], ["c", "a", "b"])
+        self.assertEqual(t.call("sort", {"list": [3, 1, 2], "limit": 2}), [1, 2])
+        self.assertEqual(t.call("sum", {"list": self.deals, "field": "v"}), 10)
+        self.assertEqual(t.call("join", {"list": ["a", "b"], "sep": ", "}), "a, b")
+
+    def test_text_tools(self):
+        t = self.t
+        self.assertEqual(t.call("format", {"template": "{a}-{b}", "a": 1, "b": "x"}), "1-x")
+        with self.assertRaisesRegex(ForgeRuntimeError, "template needs 'zz'"):
+            t.call("format", {"template": "{zz}"})
+        self.assertEqual(t.call("regex_find", {"text": "a1 b22", "pattern": r"\d+"}), ["1", "22"])
+        self.assertEqual(t.call("json_parse", {"text": '{"k": [1]}'}), {"k": [1]})
+        self.assertEqual(t.call("calc", {"op": "div", "x": 7, "y": 2}), 3.5)
+        with self.assertRaisesRegex(ForgeRuntimeError, "calc div"):
+            t.call("calc", {"op": "div", "x": 1, "y": 0})
+
+    def test_extract_text(self):
+        html = ("<html><head><title>T</title><style>x{}</style></head><body><h1>Big</h1>"
+                "<script>evil()</script><p>Some <b>bold</b> &amp; more</p></body></html>")
+        self.assertEqual(self.t.call("extract_text", {"html": html}), "T\nBig\nSome bold & more")
+
+    def test_http_tools_against_local_server(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html><title>Local</title><body><p>Hello <i>there</i></p><script>x</script></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                body = json.dumps({"echo": data}).encode()
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            page = self.t.call("http_get", {"url": base + "/"})
+            posted = self.t.call("http_post", {"url": base + "/api", "json": {"a": 1}})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertEqual(page["text"], "Local\nHello there")
+        self.assertEqual(posted["status"], 201)
+        self.assertEqual(posted["json"], {"echo": {"a": 1}})
+
+    def test_brave_search_when_key_set(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from unittest import mock
+
+        seen = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["path"] = self.path
+                seen["token"] = self.headers["X-Subscription-Token"]
+                body = json.dumps({"web": {"results": [
+                    {"title": "One", "url": "https://1", "description": "<strong>first</strong> hit"},
+                    {"title": "Two", "url": "https://2", "description": "second"},
+                ]}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        env = {"BRAVE_SEARCH_API_KEY": "tok", "FORGE_BRAVE_URL": f"http://127.0.0.1:{httpd.server_port}/search"}
+        try:
+            with mock.patch.dict(os.environ, env):
+                hits = self.t.call("web_search", {"q": "forge lang", "n": 2})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertEqual(seen["token"], "tok")
+        self.assertIn("q=forge+lang", seen["path"])
+        self.assertEqual([h["title"] for h in hits], ["One", "Two"])
+        self.assertEqual(hits[0]["snippet"], "first hit")
+        self.assertGreater(hits[0]["relevance"], hits[1]["relevance"])
 
 
 if __name__ == "__main__":

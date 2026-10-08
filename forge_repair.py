@@ -15,7 +15,32 @@ from typing import Optional
 KEYWORDS = (
     "AGENT", "MEMORY", "STEP", "TOOL", "FILTER", "INPUT", "OUTPUT",
     "ON", "REASON", "VERIFY", "RETURN",
+    "FOR", "EACH", "IN", "IF", "ELSE", "END", "YIELD", "AND", "OR", "CONTAINS",
 )
+_KEYWORD_SET = set(KEYWORDS)
+# Words right after these are names, never keywords (STEP end, OUTPUT input)
+_NAME_AFTER = {"STEP", "OUTPUT", "TOOL", "EACH", "FOR"}
+_WORD_RE = re.compile(r"(?<![$.\w])[A-Za-z_]\w*")
+
+
+def _uppercase_keywords(code: str) -> str:
+    """Uppercase keywords in a code segment, leaving $vars, field paths,
+    object keys (`in: 1`) and name positions (`OUTPUT end`) alone."""
+    out: list[str] = []
+    last = 0
+    prev = ""
+    for m in _WORD_RE.finditer(code):
+        word = m.group(0)
+        up = word.upper()
+        is_key = re.match(r"\s*:", code[m.end():]) is not None
+        name_slot = prev in _NAME_AFTER and not (prev == "FOR" and up == "EACH")
+        if up in _KEYWORD_SET and word != up and not name_slot and not is_key:
+            out.append(code[last : m.start()] + up)
+            last = m.end()
+            word = up
+        prev = word.upper() if word.upper() in _KEYWORD_SET else word
+    out.append(code[last:])
+    return "".join(out)
 
 _STRING_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'')
 
@@ -82,9 +107,8 @@ def repair_forge(source: str) -> str:
     # Normalize smart quotes first so string literals are detected correctly
     s = s.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
 
-    # Uppercase reserved keywords (word boundaries, outside strings)
-    for kw in KEYWORDS:
-        s = _sub_code(rf"\b{kw}\b", kw, s, flags=re.I)
+    # Uppercase reserved keywords (outside strings, never $vars or names)
+    s = _sub_code(r"[\s\S]+", lambda m: _uppercase_keywords(m.group(0)), s)
 
     # AGENT name without quotes: AGENT foo-bar / AGENT deal_finder → AGENT "..."
     s = re.sub(
@@ -121,7 +145,7 @@ def repair_forge(source: str) -> str:
             if not in_memory:
                 out.append(line)
                 continue
-            if re.match(r"^(STEP|REASON|VERIFY|RETURN|AGENT)\b", stripped):
+            if re.match(r"^(STEP|REASON|VERIFY|RETURN|AGENT|FOR|IF)\b", stripped):
                 in_memory = False
                 out.append(line)
                 continue
@@ -230,7 +254,7 @@ def repair_forge(source: str) -> str:
         return f"{tool_chunk.rstrip()} OUTPUT {out_var}"
 
     s = re.sub(
-        r"STEP\s+([A-Za-z_][A-Za-z0-9_]*)\s+TOOL\b[\s\S]*?\bINPUT\s*\{[^{}]*\}(?=\s*(?:STEP|REASON|VERIFY|RETURN|$))",
+        r"STEP\s+([A-Za-z_][A-Za-z0-9_]*)\s+TOOL\b[\s\S]*?\bINPUT\s*\{[^{}]*\}(?=\s*(?:STEP|REASON|VERIFY|RETURN|FOR|IF|ELSE|END|YIELD|$))",
         _inject_output,
         s,
     )
@@ -240,7 +264,7 @@ def repair_forge(source: str) -> str:
         return f"OUTPUT out\n{match.group(1)}"
 
     s = re.sub(
-        r"\bOUTPUT\s*(?=\n\s*(STEP|REASON|VERIFY|RETURN)\b)",
+        r"\bOUTPUT\s*(?=\n\s*(STEP|REASON|VERIFY|RETURN|FOR|IF|ELSE|END|YIELD)\b)",
         "OUTPUT out\n",
         s,
     )
@@ -269,7 +293,7 @@ def repair_forge(source: str) -> str:
     s = s.replace("\r\n", "\n").replace("\r", "\n")
 
     # Ensure newline before major keywords for readability / lex stability
-    for kw in ("MEMORY", "STEP", "REASON", "VERIFY", "RETURN"):
+    for kw in ("MEMORY", "STEP", "REASON", "VERIFY", "RETURN", "FOR", "IF", "ELSE", "END", "YIELD"):
         s = _sub_code(rf"([^\n])\s*({kw}\b)", rf"\1\n\2", s)
 
     return s.strip() + "\n"

@@ -1,0 +1,20 @@
+AGENT "page-digest"
+
+MEMORY {
+  urls: ["https://example.com", "https://www.iana.org/help/example-domains"]
+}
+
+FOR EACH url IN $urls OUTPUT digests
+  STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
+  IF $page.status == 200
+    REASON "Summarize this page in one sentence" ON $page.text OUTPUT summary
+    YIELD { url: $url, summary: $summary }
+  ELSE
+    YIELD { url: $url, error: $page.status }
+  END
+END
+
+STEP report TOOL join INPUT { list: $digests, sep: "\n" } OUTPUT text
+STEP save TOOL write_file INPUT { path: "out/digest.txt", body: $text } OUTPUT saved
+
+RETURN { digests: $digests, saved: $saved.path }

@@ -76,17 +76,33 @@ STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
 
 VERIFY $page.status == 200
 
-REASON "In one sentence, what is this page about?" ON $page.body OUTPUT summary
+REASON "In one sentence, what is this page about?" ON $page.text OUTPUT summary
 
 RETURN { url: $url, status: $page.status, summary: $summary }
 ```
 
-- **Field access:** `$page.body`, `$hits.0.title` read one field of a tool result, so REASON only sends the LLM what it needs.
+Loops and branches. Each loop iteration is one less round trip for the agent:
+
+```
+FOR EACH url IN $urls OUTPUT digests
+  STEP fetch TOOL http_get INPUT { url: $url } OUTPUT page
+  IF $page.status == 200
+    REASON "Summarize this page in one sentence" ON $page.text OUTPUT summary
+    YIELD { url: $url, summary: $summary }
+  ELSE
+    YIELD { url: $url, error: $page.status }
+  END
+END
+```
+
+- **Field access:** `$page.text`, `$hits.0.title` read one field of a tool result, so REASON only sends the LLM what it needs. `http_get` returns `text`, the readable page without HTML markup, which is usually several times fewer tokens than `body`.
+- **Loops & branches:** `FOR EACH … END` collects `YIELD`ed values into its `OUTPUT`; `IF … ELSE … END`; conditions combine with `AND` / `OR` and support `CONTAINS`.
 - **Lists:** `MEMORY { deals: [{ name: "Acme", amount: 15000 }], tags: ["a", "b"] }`
 - **VERIFY anywhere:** use as many as you like. A failed VERIFY stops the program *before* the next tool or LLM call.
-- **Pre-run check:** undefined `$vars` and unknown tools are caught before anything executes, all reported at once.
+- **Pre-run check:** undefined `$vars`, unknown tools and YIELD outside a loop are caught before anything executes, all reported at once.
+- **Safe to hand to an agent:** step budget (default 10,000), optional time budget (`--timeout`; MCP defaults to 300 s), and a cap on what one REASON sends to the LLM.
 
-Full reference (about 400 tokens, written for an AI's context window): `./forge spec`
+Full reference (about 700 tokens including every tool, written for an AI's context window): `./forge spec`
 
 ---
 
@@ -108,8 +124,14 @@ def word_count(inputs):
 
 Or define `TOOLS = {"name": fn, ...}` in the file to choose exactly what gets exported.
 
-Built-in tools: `http_get`, `read_file`, `write_file` (real; files are limited to the current
-directory), plus the demo tools `web_search` (offline mock), `sales_data`, `arithmetic_add` and `get_value`.
+Built-in tools (`./forge tools` shows inputs and outputs):
+
+| Kind | Tools |
+|------|-------|
+| Web | `http_get`, `http_post`, `extract_text`, `web_search` (real with `BRAVE_SEARCH_API_KEY`, offline mock otherwise) |
+| Files | `read_file`, `write_file` (limited to the current directory) |
+| Data | `count`, `pick`, `sort`, `sum`, `join`, `format`, `calc`, `regex_find`, `json_parse`, `now` |
+| Demo | `sales_data`, `arithmetic_add`, `get_value` |
 
 ---
 
@@ -138,7 +160,7 @@ LLM backends (all plain HTTP, no SDKs):
 ```
 ./forge                  # welcome
 ./forge quickstart       # guided first run
-./forge run FILE.forge   # execute (--llm mock|auto|ollama|openai, --tools FILE.py)
+./forge run FILE.forge   # execute (--llm mock|auto|ollama|openai, --tools FILE.py, --max-steps, --timeout)
 ./forge check FILE.forge # validate + pre-run check
 ./forge ask "…"          # English → Forge → run, with error-feedback retries
 ./forge spec             # compact language reference for AI context
@@ -159,7 +181,7 @@ Same via `python3 forge_cli.py …`.
 
 ## Design
 
-- Primitives: `AGENT` `MEMORY` `STEP` `TOOL` `FILTER` `REASON` `VERIFY` `RETURN`
+- Primitives: `AGENT` `MEMORY` `STEP` `TOOL` `FILTER` `REASON` `VERIFY` `FOR EACH` `IF` `YIELD` `RETURN`
 - Dual path: text syntax **or** JSON AST
 - Pipeline: emit → repair → validate → check → run
 - See [VISION.md](VISION.md) · [BENCH.md](BENCH.md) · [CREDIT_TEST.md](CREDIT_TEST.md)
@@ -178,4 +200,4 @@ python3 -m unittest discover -s tests -v
 | 18 tasks (text) | 77.8% |
 | 18 tasks (JSON AST) | 0% on 1B (use 3B+ for JSON) |
 
-These numbers predate error-feedback retries and list support; re-run `./forge bench` to update them.
+These numbers predate error-feedback retries, lists and loops; re-run `./forge bench` to update them.

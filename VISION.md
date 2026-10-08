@@ -45,7 +45,7 @@ Same nodes. Same semantics. LLMs can skip syntax entirely when that is more reli
 - **Name:** Forge  
 - **Tagline:** JavaScript for AI  
 - **Role split:** Human = vision; AI = implementation, syntax, tests, iteration  
-- **v0.2:** linear agent workflows: field access, lists, VERIFY anywhere, pre-run checks, MCP server (no loops/functions yet)  
+- **v0.3:** agent workflows with loops (`FOR EACH`/`YIELD`), branches (`IF`/`ELSE`), field access, lists, pre-run checks, budgets, MCP server, data/web tools (no user-defined functions yet)  
 
 ## Success metric
 

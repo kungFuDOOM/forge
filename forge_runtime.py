@@ -16,7 +16,10 @@ from forge_core import (
     ASTNode,
     Comparison,
     Filter,
+    ForEach,
     ForgeError,
+    If,
+    Logical,
     Literal,
     MemoryBlock,
     ObjectLiteral,
@@ -27,6 +30,7 @@ from forge_core import (
     ToolCall,
     Variable,
     Verify,
+    Yield,
     check_program,
     compile_auto,
     compile_forge,
@@ -371,6 +375,8 @@ class ToolRegistry:
         def web_search(inputs: dict) -> Any:
             q = inputs.get("q", "")
             n = int(inputs.get("n", 5) or 5)
+            if os.environ.get("BRAVE_SEARCH_API_KEY"):
+                return _brave_search(q, n)
             results = []
             for i in range(n):
                 results.append({
@@ -415,14 +421,18 @@ class ToolRegistry:
                     raw = resp.read(max_bytes + 1)
                     truncated = len(raw) > max_bytes
                     body = raw[:max_bytes].decode("utf-8", errors="replace")
-                    return {
+                    ctype = resp.headers.get("Content-Type", "")
+                    out = {
                         "status": getattr(resp, "status", 200),
                         "url": url,
-                        "content_type": resp.headers.get("Content-Type", ""),
+                        "content_type": ctype,
                         "body": body,
                         "truncated": truncated,
                         "chars": len(body),
                     }
+                    # Readable text of HTML pages: usually ~5-20x fewer tokens than body
+                    out["text"] = html_to_text(body) if "html" in ctype.lower() else body
+                    return out
             except urllib.error.HTTPError as e:
                 body = e.read(max_bytes).decode("utf-8", errors="replace") if e.fp else ""
                 return {
@@ -494,13 +504,238 @@ class ToolRegistry:
             p.write_text(text, encoding="utf-8")
             return {"path": str(p.relative_to(cwd)), "chars": len(text), "ok": True}
 
+        _register_data_tools(self)
         self.register("arithmetic_add", arithmetic_add, "INPUT { x, y } → number x+y")
-        self.register("web_search", web_search, "INPUT { q, n } → list of { title, url, relevance, snippet } (offline mock)")
+        self.register("web_search", web_search, "INPUT { q, n } → list of { title, url, relevance, snippet } (real if BRAVE_SEARCH_API_KEY set, else offline mock)")
         self.register("get_value", get_value, "INPUT { } → 42 (demo)")
         self.register("sales_data", sales_data, "INPUT { region, period } → list of { deal, amount, region, period } (demo)")
-        self.register("http_get", http_get, "INPUT { url, max_bytes? } → { status, url, content_type, body, truncated, chars } (real HTTP)")
+        self.register("http_get", http_get, "INPUT { url, max_bytes? } → { status, url, content_type, body, text, truncated, chars } (real HTTP; text = readable page text)")
         self.register("read_file", read_file, "INPUT { path, max_bytes? } → { path, body, chars, truncated } (under cwd only)")
         self.register("write_file", write_file, "INPUT { path, body } → { path, chars, ok } (under cwd only)")
+
+
+def html_to_text(html: str) -> str:
+    """Visible text of an HTML document (drops scripts, styles, markup)."""
+    from html.parser import HTMLParser
+
+    skip_tags = {"script", "style", "noscript", "svg", "template", "head"}
+    block_tags = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+                  "section", "article", "header", "footer", "ul", "ol", "table", "title"}
+
+    class _Text(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+            self.skip = 0
+            self.title = ""
+            self._in_title = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "title":
+                self._in_title = True
+            if tag in skip_tags:
+                self.skip += 1
+            elif tag in block_tags:
+                self.parts.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag == "title":
+                self._in_title = False
+            if tag in skip_tags and self.skip:
+                self.skip -= 1
+            elif tag in block_tags:
+                self.parts.append("\n")
+
+        def handle_data(self, data):
+            if self._in_title:
+                self.title += data
+            elif not self.skip:
+                self.parts.append(data)
+
+    parser = _Text()
+    parser.feed(html)
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
+    text = "\n".join(line for line in lines if line)
+    title = " ".join(parser.title.split())
+    return f"{title}\n{text}" if title and not text.startswith(title) else text
+
+
+def _brave_search(q: str, n: int) -> list:
+    """Real web search via the Brave Search API (BRAVE_SEARCH_API_KEY)."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    base = os.environ.get("FORGE_BRAVE_URL", "https://api.search.brave.com/res/v1/web/search")
+    url = f"{base}?{urllib.parse.urlencode({'q': q, 'count': max(1, min(n, 20))})}"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "X-Subscription-Token": os.environ["BRAVE_SEARCH_API_KEY"],
+        "User-Agent": "ForgeAgent/0.3",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise ForgeRuntimeError(f"web_search failed: {e}") from e
+    hits = ((data.get("web") or {}).get("results")) or []
+    return [
+        {
+            "title": h.get("title", ""),
+            "url": h.get("url", ""),
+            "relevance": round(1.0 - i * 0.05, 2),  # rank-based, 1.0 = top hit
+            "snippet": html_to_text(h.get("description", "")),
+        }
+        for i, h in enumerate(hits[:n])
+    ]
+
+
+def _register_data_tools(reg: "ToolRegistry") -> None:
+    """General-purpose tools: Forge has no expressions, so data work is tools."""
+    import re as _re
+
+    def need(inputs: dict, key: str) -> Any:
+        if key not in inputs:
+            raise ForgeRuntimeError(f"missing input: {key}")
+        return inputs[key]
+
+    def as_list(value: Any, tool: str) -> list:
+        if not isinstance(value, list):
+            raise ForgeRuntimeError(f"{tool}: list must be a list, got {type(value).__name__}")
+        return value
+
+    def field_of(item: Any, path: str) -> Any:
+        for part in str(path).split("."):
+            if isinstance(item, dict):
+                item = item.get(part)
+            elif isinstance(item, list) and part.isdigit() and int(part) < len(item):
+                item = item[int(part)]
+            else:
+                return None
+        return item
+
+    def count(i: dict) -> Any:
+        return len(need(i, "list"))
+
+    def pick(i: dict) -> Any:
+        return [field_of(x, need(i, "field")) for x in as_list(need(i, "list"), "pick")]
+
+    def sort(i: dict) -> Any:
+        items = as_list(need(i, "list"), "sort")
+        by = i.get("by")
+        key = (lambda x: field_of(x, by)) if by else (lambda x: x)
+        present = [x for x in items if key(x) is not None]
+        missing = [x for x in items if key(x) is None]  # always last
+        try:
+            out = sorted(present, key=key, reverse=bool(i.get("desc"))) + missing
+        except TypeError as e:
+            raise ForgeRuntimeError(f"sort: values are not comparable: {e}") from e
+        limit = i.get("limit")
+        return out[: int(limit)] if limit else out
+
+    def join(i: dict) -> Any:
+        return str(i.get("sep", "\n")).join(
+            x if isinstance(x, str) else json.dumps(x, default=str)
+            for x in as_list(need(i, "list"), "join")
+        )
+
+    def fmt(i: dict) -> Any:
+        values = {k: v for k, v in i.items() if k != "template"}
+        try:
+            return str(need(i, "template")).format(**values)
+        except (KeyError, IndexError, ValueError) as e:
+            raise ForgeRuntimeError(f"format: template needs {e} (give it as an INPUT key)") from e
+
+    def calc(i: dict) -> Any:
+        op, x, y = need(i, "op"), need(i, "x"), i.get("y", 0)
+        ops = {
+            "add": lambda: x + y, "sub": lambda: x - y, "mul": lambda: x * y,
+            "div": lambda: x / y, "min": lambda: min(x, y), "max": lambda: max(x, y),
+            "round": lambda: round(x, int(y)),
+        }
+        if op not in ops:
+            raise ForgeRuntimeError(f"calc: op must be one of {', '.join(ops)}")
+        try:
+            return ops[op]()
+        except (TypeError, ZeroDivisionError) as e:
+            raise ForgeRuntimeError(f"calc {op}: {e}") from e
+
+    def total(i: dict) -> Any:
+        items = as_list(need(i, "list"), "sum")
+        vals = [field_of(x, i["field"]) for x in items] if i.get("field") else items
+        try:
+            return sum(v for v in vals if v is not None)
+        except TypeError as e:
+            raise ForgeRuntimeError(f"sum: non-numeric values: {e}") from e
+
+    def regex_find(i: dict) -> Any:
+        try:
+            return _re.findall(str(need(i, "pattern")), str(need(i, "text")))[: int(i.get("limit", 100))]
+        except _re.error as e:
+            raise ForgeRuntimeError(f"regex_find: bad pattern: {e}") from e
+
+    def json_parse(i: dict) -> Any:
+        try:
+            return json.loads(need(i, "text"))
+        except (TypeError, ValueError) as e:
+            raise ForgeRuntimeError(f"json_parse: {e}") from e
+
+    def extract_text(i: dict) -> Any:
+        text = html_to_text(str(need(i, "html")))
+        limit = i.get("max_chars")
+        return text[: int(limit)] if limit else text
+
+    def now(i: dict) -> Any:
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def http_post(i: dict) -> Any:
+        import urllib.error
+        import urllib.request
+
+        url = need(i, "url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            raise ForgeRuntimeError("http_post only allows http:// or https:// URLs")
+        headers = {"User-Agent": "ForgeAgent/0.3", **(i.get("headers") or {})}
+        if "json" in i:
+            data = json.dumps(i["json"], default=str).encode("utf-8")
+            headers.setdefault("Content-Type", "application/json")
+        else:
+            data = str(i.get("body", "")).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                status, ctype, raw = resp.status, resp.headers.get("Content-Type", ""), resp.read(100_000)
+        except urllib.error.HTTPError as e:
+            status, ctype, raw = e.code, (e.headers.get("Content-Type", "") if e.headers else ""), (e.read(100_000) if e.fp else b"")
+        except Exception as e:
+            raise ForgeRuntimeError(f"http_post failed: {e}") from e
+        body = raw.decode("utf-8", errors="replace")
+        out: dict = {"status": status, "url": url, "content_type": ctype, "body": body}
+        if "json" in ctype:
+            try:
+                out["json"] = json.loads(body)
+            except ValueError:
+                pass
+        return out
+
+    for name, fn, doc in (
+        ("count", count, "INPUT { list } → number of items (or characters of a string)"),
+        ("pick", pick, "INPUT { list, field } → list of that field from each item (field may be a.b)"),
+        ("sort", sort, "INPUT { list, by?, desc?, limit? } → sorted list (by = field name)"),
+        ("sum", total, "INPUT { list, field? } → numeric total"),
+        ("join", join, "INPUT { list, sep? } → one string (default sep newline)"),
+        ("format", fmt, "INPUT { template, ...values } → string; \"Hi {name}\" with name: $n"),
+        ("calc", calc, "INPUT { op, x, y } → number; op = add|sub|mul|div|min|max|round"),
+        ("regex_find", regex_find, "INPUT { text, pattern, limit? } → list of matches"),
+        ("json_parse", json_parse, "INPUT { text } → parsed JSON value"),
+        ("extract_text", extract_text, "INPUT { html, max_chars? } → readable text"),
+        ("now", now, "INPUT { } → current UTC time, ISO 8601"),
+        ("http_post", http_post, "INPUT { url, json? | body?, headers? } → { status, body, json? } (real HTTP)"),
+    ):
+        reg.register(name, fn, doc)
 
 
 # =============================================================================
@@ -517,13 +752,16 @@ STEP s TOOL tool INPUT { k: $v } OUTPUT x     call a tool, result in $x
 STEP s FILTER field > 0.8 ON $list OUTPUT y   keep list items whose field matches
 REASON "prompt" ON $x OUTPUT z                LLM call on $x, text in $z
 VERIFY $x.status == 200                       stop the run if false
+FOR EACH item IN $list OUTPUT out ... END     loop; out = list of YIELDed values
+  YIELD { k: $item.f }                        (no YIELD: out = last OUTPUT per item)
+IF cond ... ELSE ... END                      branch
 RETURN { k: $x }                              required, last
 
-STEP, REASON and VERIFY: any order, any count. VERIFY early to fail before costly steps.
 Values: "text" 12 -3.5 true false null [a, b] { k: v } $var $var.field $var.0.field
-Compare: == != > < >= <=   (FILTER left side is a field of each list item)
-Pass REASON only the field it needs ($page.body, not $page) to save tokens.
-Errors list what is defined/available; fix and resend.
+Conditions: == != > < >= <= CONTAINS, joined with AND / OR
+Loop bodies are scoped: only the FOR's OUTPUT is visible after END.
+VERIFY early to stop before costly steps. Pass REASON only the field it needs
+($page.text, not $page). Errors say what is defined/available; fix and resend.
 """.strip()
 
 
@@ -540,20 +778,36 @@ def language_spec(tools: Optional["ToolRegistry"] = None) -> str:
 # EVALUATOR
 # =============================================================================
 
+DEFAULT_MAX_STEPS = 10_000
+REASON_CONTEXT_CHARS = int(os.environ.get("FORGE_REASON_MAX_CHARS", "40000"))  # ~10k tokens
+
+
 class Evaluator:
     def __init__(
         self,
         tools: Optional[ToolRegistry] = None,
         llm: Optional[LLMClient] = None,
+        max_steps: Optional[int] = DEFAULT_MAX_STEPS,
+        max_seconds: Optional[float] = None,
     ):
         self.tools = tools or ToolRegistry()
         self.llm = llm or MockLLMClient()
         self.memory: dict[str, Any] = {}
         self.agent_name: str = ""
+        self.max_steps = max_steps
+        self.max_seconds = max_seconds
+        self.steps_run = 0
+        self._deadline: Optional[float] = None
+        self._yields: list[list] = []
 
     def run(self, program: Program) -> Any:
+        import time
+
         self.memory = {}
         self.agent_name = program.agent.name
+        self.steps_run = 0
+        self._yields = []
+        self._deadline = time.monotonic() + self.max_seconds if self.max_seconds else None
 
         # 0. Static check — fail before any tool or LLM call is spent
         problems = check_program(program, self.tools.names())
@@ -565,9 +819,8 @@ class Evaluator:
         if program.memory:
             self._eval_memory(program.memory)
 
-        # 3. STEPS
-        for step in program.steps:
-            self._eval_step(step)
+        # 3. STEPS (incl. REASON / VERIFY / FOR / IF in program order)
+        self._exec_block(program.steps)
 
         # 4. REASON
         if program.reason:
@@ -584,9 +837,35 @@ class Evaluator:
         for entry in block.entries:
             self.memory[entry.key] = self._eval_value(entry.value)
 
+    def _exec_block(self, steps: list) -> None:
+        for step in steps:
+            self._eval_step(step)
+
+    def _tick(self, step: Step) -> None:
+        """Budget guard: a runaway loop stops instead of hanging the caller."""
+        import time
+
+        self.steps_run += 1
+        if self.max_steps is not None and self.steps_run > self.max_steps:
+            raise ForgeRuntimeError(
+                f"Step budget exceeded ({self.max_steps} steps) at STEP {step.step_name}"
+            )
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            raise ForgeRuntimeError(
+                f"Time budget exceeded ({self.max_seconds}s) at STEP {step.step_name}"
+            )
+
     def _eval_step(self, step: Step) -> None:
+        self._tick(step)
         action = step.action
-        if isinstance(action, ToolCall):
+        if isinstance(action, ForEach):
+            self._eval_for(action)
+        elif isinstance(action, If):
+            branch = action.then if self._eval_comparison(action.condition) else action.else_
+            self._exec_block(branch)
+        elif isinstance(action, Yield):
+            self._yields[-1].append(self._eval_value(action.value))
+        elif isinstance(action, ToolCall):
             inputs = {k: self._eval_value(v) for k, v in action.inputs.items()}
             result = self.tools.call(action.tool_name, inputs)
             self.memory[action.output_var] = result
@@ -600,6 +879,32 @@ class Evaluator:
             self._eval_verify(action)
         else:
             raise ForgeRuntimeError(f"Unknown step action: {type(action)}")
+
+    def _eval_for(self, loop: ForEach) -> None:
+        items = self._eval_value(loop.source)
+        if isinstance(items, dict):
+            items = [{"key": k, "value": v} for k, v in items.items()]
+        if not isinstance(items, list):
+            raise ForgeRuntimeError(
+                f"FOR EACH {loop.var} needs a list, got {type(items).__name__}"
+            )
+        # Without YIELD, collect the body's last output each iteration
+        implicit = None if _has_yield(loop.body) else _last_output(loop.body)
+        outer = self.memory
+        results: list = []
+        self._yields.append(results)
+        try:
+            for item in items:
+                self.memory = dict(outer)  # body is its own scope
+                self.memory[loop.var] = item
+                self._exec_block(loop.body)
+                if implicit:
+                    results.append(self.memory.get(implicit))
+        finally:
+            self._yields.pop()
+            self.memory = outer
+        if loop.output_var:
+            self.memory[loop.output_var] = results
 
     def _eval_filter(self, condition: Comparison, source: Any) -> Any:
         # List: filter items
@@ -617,6 +922,10 @@ class Evaluator:
 
     def _eval_reason(self, reason: Reason) -> None:
         data = self._resolve_var(reason.input_var)
+        # Cap what one REASON can send so a huge page can't blow the budget
+        raw = data if isinstance(data, str) else json.dumps(data, default=str)
+        if len(raw) > REASON_CONTEXT_CHARS:
+            data = raw[:REASON_CONTEXT_CHARS] + f"\n…[truncated {len(raw) - REASON_CONTEXT_CHARS} chars]"
         text = self.llm.complete(reason.prompt, context=data)
         self.memory[reason.output_var] = text
 
@@ -624,10 +933,21 @@ class Evaluator:
         ok = self._eval_comparison(verify.condition)
         if not ok:
             cond = verify.condition
+            got = ""
+            if isinstance(cond, Comparison) and cond.left_kind != "field":
+                try:
+                    got = f" — left side was {self._preview(self._eval_comp_side(cond.left, cond.left_kind, None))}"
+                except ForgeRuntimeError:
+                    pass
             raise ForgeVerifyError(
-                f"VERIFY failed: {self._fmt_comp(cond)} "
+                f"VERIFY failed: {self._fmt_comp(cond)}{got} "
                 f"(memory keys: {list(self.memory.keys())})"
             )
+
+    @staticmethod
+    def _preview(value: Any, limit: int = 80) -> str:
+        text = json.dumps(value, default=str)
+        return text if len(text) <= limit else text[:limit] + "…"
 
     def _eval_return(self, ret: Return) -> Any:
         return self._eval_value(ret.value)
@@ -674,9 +994,14 @@ class Evaluator:
 
     def _eval_comparison(
         self,
-        cond: Comparison,
+        cond: Any,
         item_context: Any = None,
     ) -> bool:
+        if isinstance(cond, Logical):
+            first = self._eval_comparison(cond.left, item_context)
+            if cond.operator == "AND":
+                return first and self._eval_comparison(cond.right, item_context)
+            return first or self._eval_comparison(cond.right, item_context)
         left = self._eval_comp_side(cond.left, cond.left_kind, item_context)
         right = self._eval_value(cond.right) if isinstance(cond.right, ASTNode) else cond.right
         op = cond.operator
@@ -686,6 +1011,13 @@ class Evaluator:
             return left == right
         if op == "!=":
             return left != right
+        if op == "CONTAINS":
+            # substring (case-insensitive), list membership, or dict key
+            if isinstance(left, str) and isinstance(right, str):
+                return right.lower() in left.lower()
+            if isinstance(left, (list, dict)):
+                return right in left
+            return False
 
         # Ordering ops — allow None-safe false
         if left is None or right is None:
@@ -722,7 +1054,9 @@ class Evaluator:
             return self._eval_value(left)
         return left
 
-    def _fmt_comp(self, cond: Comparison) -> str:
+    def _fmt_comp(self, cond: Any) -> str:
+        if isinstance(cond, Logical):
+            return f"{self._fmt_comp(cond.left)} {cond.operator} {self._fmt_comp(cond.right)}"
         if cond.left_kind == "field":
             l = str(cond.left)
         elif isinstance(cond.left, Variable):
@@ -740,6 +1074,25 @@ class Evaluator:
         return f"{l} {cond.operator} {r}"
 
 
+def _has_yield(steps: list) -> bool:
+    """YIELD anywhere in this loop body (not counting nested loops)."""
+    for step in steps:
+        a = step.action
+        if isinstance(a, Yield):
+            return True
+        if isinstance(a, If) and (_has_yield(a.then) or _has_yield(a.else_)):
+            return True
+    return False
+
+
+def _last_output(steps: list) -> Optional[str]:
+    for step in reversed(steps):
+        name = getattr(step.action, "output_var", None)
+        if name:
+            return name
+    return None
+
+
 # =============================================================================
 # PUBLIC API
 # =============================================================================
@@ -748,18 +1101,21 @@ def run_forge(
     source: str,
     tools: Optional[ToolRegistry] = None,
     llm: Optional[LLMClient] = None,
+    **limits: Any,
 ) -> Any:
-    """Compile and execute Forge source (text syntax or JSON AST string)."""
+    """Compile and execute Forge source (text syntax or JSON AST string).
+    limits: max_steps, max_seconds (see Evaluator)."""
     program = compile_auto(source)
-    return Evaluator(tools=tools, llm=llm).run(program)
+    return Evaluator(tools=tools, llm=llm, **limits).run(program)
 
 
 def run_program(
     program: Program,
     tools: Optional[ToolRegistry] = None,
     llm: Optional[LLMClient] = None,
+    **limits: Any,
 ) -> Any:
-    return Evaluator(tools=tools, llm=llm).run(program)
+    return Evaluator(tools=tools, llm=llm, **limits).run(program)
 
 
 # =============================================================================
