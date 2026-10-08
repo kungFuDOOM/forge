@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional
 
 from forge_core import (
+    ArrayLiteral,
     ASTNode,
     Comparison,
     Filter,
@@ -91,29 +92,83 @@ class OpenAILLMClient(LLMClient):
             )
 
     def complete(self, prompt: str, context: Any = None) -> str:
-        try:
-            from openai import OpenAI
-        except ImportError as e:
-            raise ForgeRuntimeError("Install openai: pip install openai") from e
-
-        kwargs: dict[str, Any] = {"api_key": self.api_key}
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-
-        client = OpenAI(**kwargs)
         user_content = prompt
         if context is not None:
             user_content = f"{prompt}\n\nContext data:\n{json.dumps(context, default=str, indent=2)}"
-
-        resp = client.chat.completions.create(
-            model=self.model,
-            messages=[
+        text, _usage = chat_completion(
+            [
                 {"role": "system", "content": "You are a concise reasoning assistant for an agent runtime."},
                 {"role": "user", "content": user_content},
             ],
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
             temperature=0.2,
         )
-        return resp.choices[0].message.content or ""
+        return text
+
+
+def chat_completion(
+    messages: list,
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    max_tokens: Optional[int] = None,
+    stop: Optional[list] = None,
+    timeout: float = 120,
+) -> tuple[str, dict]:
+    """
+    OpenAI-compatible /chat/completions over stdlib HTTP (no openai package).
+    Works with Groq, Gemini, OpenRouter, OpenAI, DeepSeek. Returns (text, usage).
+    """
+    import urllib.error
+    import urllib.request
+
+    if not api_key:
+        api_key, base_url, model = _resolve_openai_compat(base_url=base_url, model=model)
+    if not api_key:
+        raise ForgeRuntimeError(
+            "No API key. Set GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, "
+            "OPENAI_API_KEY, or DEEPSEEK_API_KEY — or use Ollama (free/local)."
+        )
+    url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    body: dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature}
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+    if stop:
+        body["stop"] = stop
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "ForgeAgent/0.2",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read(2000).decode("utf-8", errors="replace") if e.fp else ""
+        raise ForgeRuntimeError(f"LLM API error {e.code} from {url}: {detail}") from e
+    except urllib.error.URLError as e:
+        raise ForgeRuntimeError(f"LLM API not reachable at {url}: {e}") from e
+
+    choices = data.get("choices") or [{}]
+    text = ((choices[0].get("message") or {}).get("content")) or ""
+    usage = data.get("usage") or {}
+    return text, {
+        "backend": "openai",
+        "model": model,
+        "base_url": base_url,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+    }
 
 
 class OllamaLLMClient(LLMClient):
@@ -259,10 +314,44 @@ ToolFn = Callable[[dict], Any]
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolFn] = {}
+        self._docs: dict[str, str] = {}
         self._register_builtins()
 
-    def register(self, name: str, fn: ToolFn) -> None:
+    def register(self, name: str, fn: ToolFn, doc: Optional[str] = None) -> None:
         self._tools[name] = fn
+        if doc is None:
+            doc = (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else ""
+        self._docs[name] = doc
+
+    def docs(self) -> dict[str, str]:
+        return {n: self._docs.get(n, "") for n in self.names()}
+
+    def load_file(self, path: str) -> list[str]:
+        """
+        Register tools from a Python file. Uses its TOOLS dict if present,
+        otherwise every public top-level function defined in the file.
+        Each tool takes one dict of inputs; its docstring's first line is its doc.
+        """
+        import importlib.util
+        from pathlib import Path
+
+        file = Path(path).expanduser().resolve()
+        if not file.is_file():
+            raise ForgeRuntimeError(f"Tools file not found: {path}")
+        spec = importlib.util.spec_from_file_location(f"forge_user_tools_{file.stem}", file)
+        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        tools = getattr(module, "TOOLS", None)
+        if tools is None:
+            tools = {
+                name: fn
+                for name, fn in vars(module).items()
+                if callable(fn) and not name.startswith("_")
+                and getattr(fn, "__module__", None) == module.__name__
+            }
+        for name, fn in tools.items():
+            self.register(name, fn)
+        return sorted(tools)
 
     def call(self, name: str, inputs: dict) -> Any:
         if name not in self._tools:
@@ -405,13 +494,46 @@ class ToolRegistry:
             p.write_text(text, encoding="utf-8")
             return {"path": str(p.relative_to(cwd)), "chars": len(text), "ok": True}
 
-        self.register("arithmetic_add", arithmetic_add)
-        self.register("web_search", web_search)
-        self.register("get_value", get_value)
-        self.register("sales_data", sales_data)
-        self.register("http_get", http_get)
-        self.register("read_file", read_file)
-        self.register("write_file", write_file)
+        self.register("arithmetic_add", arithmetic_add, "INPUT { x, y } → number x+y")
+        self.register("web_search", web_search, "INPUT { q, n } → list of { title, url, relevance, snippet } (offline mock)")
+        self.register("get_value", get_value, "INPUT { } → 42 (demo)")
+        self.register("sales_data", sales_data, "INPUT { region, period } → list of { deal, amount, region, period } (demo)")
+        self.register("http_get", http_get, "INPUT { url, max_bytes? } → { status, url, content_type, body, truncated, chars } (real HTTP)")
+        self.register("read_file", read_file, "INPUT { path, max_bytes? } → { path, body, chars, truncated } (under cwd only)")
+        self.register("write_file", write_file, "INPUT { path, body } → { path, chars, ok } (under cwd only)")
+
+
+# =============================================================================
+# LANGUAGE SPEC (for AIs: paste into context, or read via `forge spec`)
+# =============================================================================
+
+SPEC_HEADER = """
+Forge: agent programs. One program runs a whole multi-step job in one go.
+Emit only Forge. Keywords UPPERCASE. Lines run top to bottom.
+
+AGENT "name"                                  required, first
+MEMORY { k: "v", n: 3, xs: [1, 2], o: { a: 1 } }  optional inputs
+STEP s TOOL tool INPUT { k: $v } OUTPUT x     call a tool, result in $x
+STEP s FILTER field > 0.8 ON $list OUTPUT y   keep list items whose field matches
+REASON "prompt" ON $x OUTPUT z                LLM call on $x, text in $z
+VERIFY $x.status == 200                       stop the run if false
+RETURN { k: $x }                              required, last
+
+STEP, REASON and VERIFY: any order, any count. VERIFY early to fail before costly steps.
+Values: "text" 12 -3.5 true false null [a, b] { k: v } $var $var.field $var.0.field
+Compare: == != > < >= <=   (FILTER left side is a field of each list item)
+Pass REASON only the field it needs ($page.body, not $page) to save tokens.
+Errors list what is defined/available; fix and resend.
+""".strip()
+
+
+def language_spec(tools: Optional["ToolRegistry"] = None) -> str:
+    """Compact language reference including the available tools."""
+    docs = (tools or ToolRegistry()).docs()
+    width = max((len(n) for n in docs), default=0)
+    lines = [SPEC_HEADER, "", "Tools:"]
+    lines += [f"  {name.ljust(width)}  {doc}".rstrip() for name, doc in docs.items()]
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -517,6 +639,8 @@ class Evaluator:
             return self._resolve_var(node.name)
         if isinstance(node, ObjectLiteral):
             return {k: self._eval_value(v) for k, v in node.properties.items()}
+        if isinstance(node, ArrayLiteral):
+            return [self._eval_value(v) for v in node.items]
         raise ForgeRuntimeError(f"Cannot evaluate value node: {type(node)}")
 
     def _resolve_var(self, name: str) -> Any:

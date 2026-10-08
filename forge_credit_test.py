@@ -263,38 +263,24 @@ def call_openai_compat(
     num_predict: int = 220,
     stop: Optional[list[str]] = None,
 ) -> tuple[str, dict]:
-    from forge_runtime import _resolve_openai_compat
-    from openai import OpenAI
+    from forge_runtime import chat_completion
 
-    api_key, base_url, resolved = _resolve_openai_compat(model=model)
-    if not api_key:
-        raise RuntimeError("No API key for openai backend")
-    kwargs: dict[str, Any] = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    client = OpenAI(**kwargs)
-    create_kwargs: dict[str, Any] = {
-        "model": resolved,
-        "messages": [
+    t0 = time.time()
+    text, usage = chat_completion(
+        [
             {"role": "system", "content": "You generate only code. No explanation."},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.1,
-        "max_tokens": num_predict,
-    }
-    if stop:
-        create_kwargs["stop"] = stop
-    t0 = time.time()
-    resp = client.chat.completions.create(**create_kwargs)
+        model=model,
+        temperature=0.1,
+        max_tokens=num_predict,
+        stop=stop,
+    )
     elapsed = time.time() - t0
-    text = resp.choices[0].message.content or ""
-    usage = resp.usage
-    prompt_tok = int(getattr(usage, "prompt_tokens", None) or max(1, len(prompt) // 4))
-    completion_tok = int(getattr(usage, "completion_tokens", None) or max(1, len(text) // 4))
+    prompt_tok = int(usage.get("prompt_tokens") or max(1, len(prompt) // 4))
+    completion_tok = int(usage.get("completion_tokens") or max(1, len(text) // 4))
     return text, {
-        "backend": "openai",
-        "model": resolved,
-        "base_url": base_url,
+        **usage,
         "prompt_tokens": prompt_tok,
         "completion_tokens": completion_tok,
         "total_tokens": prompt_tok + completion_tok,

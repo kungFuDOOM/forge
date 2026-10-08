@@ -23,7 +23,7 @@ Target: ≥97% on expanded suite (needs stronger model and/or more repair, or JS
 
 - Full **JSON AST** emission (objects too large; JSON breaks mid-stream)  
 - Inventing multi-step logic when the model drops a STEP (VERIFY then correctly fails)  
-- Hallucinated MEMORY arrays (`[{...}]`) — not in v0.1
+- ~~Hallucinated MEMORY arrays (`[{...}]`)~~ — lists are valid Forge since v0.2
 
 ## How to re-run
 

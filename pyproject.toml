@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-lang"
+version = "0.2.0"
+description = "Forge: an AI-native agent language. Write a short program, run a whole multi-step job."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+forge = "forge_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kungFuDOOM/forge"
+
+[tool.setuptools]
+py-modules = [
+    "forge_benchmark",
+    "forge_cli",
+    "forge_core",
+    "forge_credit_test",
+    "forge_generate",
+    "forge_mcp",
+    "forge_offline_bench",
+    "forge_repair",
+    "forge_runtime",
+]

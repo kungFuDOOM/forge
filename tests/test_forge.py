@@ -265,5 +265,241 @@ class TestCreditSandbox(unittest.TestCase):
         self.assertTrue(ok, err)
 
 
+
+class TestLists(unittest.TestCase):
+    def test_list_literals_in_memory_filter_and_return(self):
+        out = run('''
+AGENT "lists"
+MEMORY {
+  deals: [
+    { name: "Acme", amount: 15000 },
+    { name: "Beta", amount: 800 }
+  ]
+  tags: ["x", "y"]
+}
+STEP big FILTER amount > 1000 ON $deals OUTPUT big
+RETURN { big: $big, first: $tags.0, pair: [$tags.1, 2] }
+''')
+        self.assertEqual(out, {"big": [{"name": "Acme", "amount": 15000}], "first": "x", "pair": ["y", 2]})
+
+    def test_list_json_roundtrip(self):
+        prog = compile_forge('AGENT "l"\nMEMORY { xs: [1, [2, 3]] }\nSTEP s TOOL get_value INPUT {} OUTPUT v\nRETURN $xs')
+        again = compile_forge_json(_ast_to_dict(prog))
+        self.assertEqual(run_program(again, ToolRegistry(), MockLLMClient()), [1, [2, 3]])
+
+    def test_vars_inside_lists_are_checked(self):
+        prog = compile_forge('AGENT "l"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nRETURN [$v, $missing]')
+        self.assertIn("$missing", check_program(prog)[0])
+
+
+class TestRepairKeepsLists(unittest.TestCase):
+    def test_multiline_list_survives_and_junk_is_dropped(self):
+        src = """Sure! Here is the program:
+agent list-demo
+memory {
+  items: [
+    { name: "a", score: 0.9 },
+    { name: "b", score: 0.2 }
+  ]
+  TOP PAPER 1
+  limit = 0.5
+}
+step keep filter score > 0.5 on $items output good
+verify $good.0.name == "a"
+return { good: $good }
+Hope that helps"""
+        prog, _, _ = try_compile_repaired(src)
+        self.assertEqual(run_program(prog, ToolRegistry(), MockLLMClient()), {"good": [{"name": "a", "score": 0.9}]})
+
+    def test_one_line_memory_then_bare_keep_filter(self):
+        prog, _, _ = try_compile_repaired(
+            'AGENT "k"\nMEMORY { xs: [{v: 2}] }\nkeep filter v > 1 on $xs output out\nRETURN $out'
+        )
+        self.assertEqual(run_program(prog, ToolRegistry(), MockLLMClient()), [{"v": 2}])
+
+
+class TestGenerateRetry(unittest.TestCase):
+    def test_error_is_fed_back_and_fixed(self):
+        from forge_generate import generate_and_run
+
+        prompts: list[str] = []
+        replies = iter([
+            # attempt 1: uses an undefined variable
+            'AGENT "a"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nRETURN { v: $value }',
+            # attempt 2: fixed
+            'AGENT "a"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nRETURN { v: $v }',
+        ])
+
+        def fake_llm(prompt):
+            prompts.append(prompt)
+            return next(replies), {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+        out = generate_and_run("return the value", llm_call=fake_llm, retries=2)
+        self.assertTrue(out["runtime_ok"], out.get("error"))
+        self.assertEqual(out["result"], {"v": 42})
+        self.assertEqual(out["attempts"], 2)
+        self.assertEqual(out["usage"]["total_tokens"], 30)
+        self.assertIn("$value used before it is defined", prompts[1])
+
+    def test_gives_up_after_retries(self):
+        from forge_generate import generate_and_run
+
+        calls = []
+
+        def bad_llm(prompt):
+            calls.append(prompt)
+            return "not forge at all", {}
+
+        out = generate_and_run("x", llm_call=bad_llm, retries=1)
+        self.assertFalse(out["parse_ok"])
+        self.assertEqual(len(calls), 2)
+
+
+class TestToolsFile(unittest.TestCase):
+    def test_load_functions_and_docs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "my_tools.py"
+            f.write_text(
+                "import json\n"
+                "def word_count(inputs):\n"
+                "    \"\"\"INPUT { text } → word count\"\"\"\n"
+                "    return len(inputs['text'].split())\n"
+                "def _private(inputs):\n    return 1\n"
+            )
+            tools = ToolRegistry()
+            self.assertEqual(tools.load_file(str(f)), ["word_count"])
+            self.assertEqual(tools.docs()["word_count"], "INPUT { text } → word count")
+            out = run('AGENT "w"\nSTEP c TOOL word_count INPUT { text: "a b c" } OUTPUT n\nRETURN $n', tools)
+            self.assertEqual(out, 3)
+
+    def test_tools_dict_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "t.py"
+            f.write_text("def helper(i):\n    return 1\nTOOLS = {'double': lambda i: i['x'] * 2}\n")
+            tools = ToolRegistry()
+            self.assertEqual(tools.load_file(str(f)), ["double"])
+            self.assertNotIn("helper", tools.names())
+
+
+class TestSpec(unittest.TestCase):
+    def test_spec_lists_tools_and_syntax(self):
+        from forge_runtime import language_spec
+
+        spec = language_spec()
+        for needle in ("AGENT", "VERIFY", "$var.field", "http_get", "write_file"):
+            self.assertIn(needle, spec)
+        self.assertLess(len(spec) // 4, 600, "spec should stay small enough to keep in context")
+
+
+class TestMCP(unittest.TestCase):
+    def setUp(self):
+        from forge_mcp import ForgeMCPServer
+
+        self.server = ForgeMCPServer(llm="mock")
+
+    def call(self, method, params=None, msg_id=1):
+        return self.server.handle({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params or {}})
+
+    def test_initialize_and_list(self):
+        init = self.call("initialize", {"protocolVersion": "2025-06-18"})["result"]
+        self.assertEqual(init["protocolVersion"], "2025-06-18")
+        self.assertIn("tools", init["capabilities"])
+        names = [t["name"] for t in self.call("tools/list")["result"]["tools"]]
+        self.assertEqual(names, ["forge_run", "forge_check"])
+
+    def test_run_and_check(self):
+        res = self.call("tools/call", {"name": "forge_run", "arguments": {"source": EXAMPLES["basic-calculator"]}})["result"]
+        self.assertFalse(res["isError"])
+        self.assertIn('"result": 22', res["content"][0]["text"])
+        res = self.call("tools/call", {"name": "forge_check", "arguments": {"source": 'AGENT "x"\nSTEP s TOOL nope INPUT {} OUTPUT r\nRETURN $r'}})["result"]
+        self.assertTrue(res["isError"])
+        self.assertIn("unknown tool 'nope'", res["content"][0]["text"])
+
+    def test_errors_and_notifications(self):
+        self.assertIsNone(self.server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        self.assertEqual(self.call("nope")["error"]["code"], -32601)
+        res = self.call("tools/call", {"name": "forge_run", "arguments": {"source": "garbage"}})["result"]
+        self.assertTrue(res["isError"])
+
+    def test_stdio_subprocess(self):
+        import json
+        import subprocess
+
+        msgs = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "forge_run", "arguments": {"source": EXAMPLES["sales-analyzer"], "llm": "mock"}}},
+        ]
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "forge_cli.py"), "mcp", "--llm", "mock"],
+            input="".join(json.dumps(m) + "\n" for m in msgs),
+            capture_output=True, text=True, timeout=30,
+        )
+        lines = [json.loads(line) for line in proc.stdout.splitlines()]
+        self.assertEqual([m["id"] for m in lines], [1, 2])
+        self.assertIn("Gamma Inc", lines[1]["result"]["content"][0]["text"])
+
+
+class TestChatCompletion(unittest.TestCase):
+    def test_openai_compatible_http(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from forge_runtime import chat_completion
+
+        seen = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen["path"] = self.path
+                seen["auth"] = self.headers["Authorization"]
+                seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                payload = json.dumps({
+                    "choices": [{"message": {"content": "hello"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            text, usage = chat_completion(
+                [{"role": "user", "content": "hi"}],
+                api_key="k", base_url=f"http://127.0.0.1:{httpd.server_port}/v1", model="m",
+                max_tokens=5, stop=["\n"],
+            )
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertEqual(text, "hello")
+        self.assertEqual(usage["total_tokens"], 4)
+        self.assertEqual(seen["path"], "/v1/chat/completions")
+        self.assertEqual(seen["auth"], "Bearer k")
+        self.assertEqual(seen["body"]["max_tokens"], 5)
+
+
+class TestCLI(unittest.TestCase):
+    def test_init_templates_check_clean(self):
+        import contextlib
+        import io
+
+        from forge_cli import main
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            for template in ("basic", "http", "file"):
+                with self.subTest(template=template):
+                    out = Path(tmp) / f"{template}.forge"
+                    self.assertEqual(main(["init", "demo", "-o", str(out), "--template", template]), 0)
+                    self.assertEqual(main(["check", str(out)]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

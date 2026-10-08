@@ -370,12 +370,14 @@
     <pre class="mono"><span class="cmt"># clone &amp; go</span>
 git clone https://github.com/kungFuDOOM/forge.git
 cd forge
-chmod +x forge
 
 ./forge quickstart
 ./forge run examples/url_fetcher.forge
 ./forge run examples/file_summarizer.forge
-./forge ask <span class="str">"Add 3 and 9 and return the total"</span></pre>
+./forge ask <span class="str">"Add 3 and 9 and return the total"</span>
+
+<span class="cmt"># give your AI agent Forge as a tool (MCP)</span>
+claude mcp add forge -- python3 <span class="str">"$PWD/forge_cli.py"</span> mcp</pre>
   </section>
 
   <div class="cta-band">

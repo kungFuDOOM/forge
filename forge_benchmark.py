@@ -78,7 +78,9 @@ Rules:
 - Keywords UPPERCASE only.
 - Variables always $name.
 - Strings use double quotes.
-- MEMORY uses braces: MEMORY { a: 1 b: 2 }
+- MEMORY uses braces: MEMORY { a: 1 b: 2 }; lists use brackets: [1, 2]
+- Read a field of a result: $page.body, $hits.0.title
+- VERIFY may appear between STEPs to stop early.
 - At least one STEP. RETURN is last.
 - Tools available: arithmetic_add, web_search, get_value, sales_data.
 - No markdown. No explanation. Stop after RETURN.
@@ -402,46 +404,17 @@ def call_llm(
         }
 
     # OpenAI-compatible (Groq, Gemini, OpenRouter, OpenAI, DeepSeek)
-    if model:
-        os.environ.setdefault("FORGE_BENCH_MODEL", model)
-    try:
-        from openai import OpenAI
-    except ImportError as e:
-        raise RuntimeError("pip install openai") from e
+    from forge_runtime import chat_completion
 
-    api_key, base_url, resolved_model = __import__(
-        "forge_runtime", fromlist=["_resolve_openai_compat"]
-    )._resolve_openai_compat(model=model)
-    if not api_key:
-        raise RuntimeError(
-            "No API key for openai backend. Set GROQ_API_KEY, GEMINI_API_KEY, "
-            "OPENROUTER_API_KEY, OPENAI_API_KEY, or DEEPSEEK_API_KEY."
-        )
-
-    kwargs: dict[str, Any] = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-
-    client = OpenAI(**kwargs)
-    resp = client.chat.completions.create(
-        model=resolved_model,
-        messages=[
+    text, usage = chat_completion(
+        [
             {"role": "system", "content": "You generate only valid Forge programs."},
             {"role": "user", "content": prompt},
         ],
+        model=model,
         temperature=0.1,
     )
-    elapsed = time.time() - t0
-    text = resp.choices[0].message.content or ""
-    usage = {
-        "backend": "openai",
-        "model": resolved_model,
-        "base_url": base_url,
-        "elapsed_s": round(elapsed, 3),
-        "prompt_tokens": getattr(resp.usage, "prompt_tokens", None),
-        "completion_tokens": getattr(resp.usage, "completion_tokens", None),
-        "total_tokens": getattr(resp.usage, "total_tokens", None),
-    }
+    usage["elapsed_s"] = round(time.time() - t0, 3)
     return text, usage
 
 

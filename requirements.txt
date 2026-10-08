@@ -1,2 +1,2 @@
-# Required only for live LLM (REASON runtime + benchmark)
-openai>=1.0.0
+# Forge has no dependencies: Python 3.10+ standard library only.
+# LLM backends (Ollama, Groq, Gemini, OpenRouter, OpenAI, DeepSeek) use plain HTTP.

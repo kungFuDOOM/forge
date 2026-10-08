@@ -22,3 +22,11 @@ jobs:
           python forge_core.py
           python forge_runtime.py
           python forge_offline_bench.py
+      - name: Install and smoke-test the forge command
+        run: |
+          pip install .
+          cd "$RUNNER_TEMP"
+          forge init smoke --template http -o smoke.forge
+          forge check smoke.forge
+          forge examples basic-calculator
+          forge spec

@@ -56,9 +56,19 @@ def _friendly_error(exc: Exception) -> str:
     return f"{name}: {msg}"
 
 
+def _tools(args: argparse.Namespace):
+    """Built-in tools plus any loaded with --tools FILE.py."""
+    from forge_runtime import ToolRegistry
+
+    tools = ToolRegistry()
+    for path in getattr(args, "tools", None) or []:
+        tools.load_file(path)
+    return tools
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from forge_repair import try_compile_repaired
-    from forge_runtime import run_forge, run_program, make_llm_client, ToolRegistry
+    from forge_runtime import run_forge, run_program, make_llm_client
 
     path = Path(args.file)
     if not path.exists():
@@ -67,10 +77,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     source = path.read_text(encoding="utf-8")
-    llm = make_llm_client(args.llm)
-    tools = ToolRegistry()
-
     try:
+        llm = make_llm_client(args.llm)
+        tools = _tools(args)
         if args.repair:
             program, used, notes = try_compile_repaired(source)
             if notes and not args.quiet:
@@ -91,7 +100,6 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     from forge_core import compile_auto, ast_to_json, check_program, validate_ast
     from forge_repair import try_compile_repaired
-    from forge_runtime import ToolRegistry
 
     path = Path(args.file)
     if not path.exists():
@@ -109,7 +117,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"  {_friendly_error(e)}")
         return 1
 
-    errs = validate_ast(program) or check_program(program, ToolRegistry().names())
+    errs = validate_ast(program) or check_program(program, _tools(args).names())
     if errs:
         print(f"FAIL  {path}")
         for e in errs:
@@ -190,21 +198,46 @@ RETURN {{ topic: $topic, summary: $summary }}
 '''
 
 
+HTTP_STARTER = '''AGENT "{name}"
+
+MEMORY {{
+  url: "https://example.com"
+}}
+
+STEP fetch TOOL http_get INPUT {{ url: $url }} OUTPUT page
+
+VERIFY $page.status == 200
+
+REASON "In one sentence, what is this page about?" ON $page.body OUTPUT summary
+
+RETURN {{ url: $url, status: $page.status, summary: $summary }}
+'''
+
+FILE_STARTER = '''AGENT "{name}"
+
+MEMORY {{
+  path: "notes.txt"
+}}
+
+STEP load TOOL read_file INPUT {{ path: $path }} OUTPUT doc
+
+VERIFY $doc.chars > 0
+
+REASON "Summarize this document in two short bullets" ON $doc.body OUTPUT summary
+
+RETURN {{ path: $path, summary: $summary, chars: $doc.chars }}
+'''
+
+TEMPLATES = {"basic": STARTER, "http": HTTP_STARTER, "file": FILE_STARTER}
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     name = args.name.strip().replace(" ", "-")
     out = Path(args.out or f"{name}.forge")
     if out.exists() and not args.force:
         print(f"Refusing to overwrite {out} (use --force)", file=sys.stderr)
         return 1
-    if args.template == "http":
-        template = (ROOT / "examples" / "url_fetcher.forge").read_text(encoding="utf-8")
-        template = template.replace('AGENT "url-fetcher"', f'AGENT "{name}"', 1)
-    elif args.template == "file":
-        template = (ROOT / "examples" / "file_summarizer.forge").read_text(encoding="utf-8")
-        template = template.replace('AGENT "file-summarizer"', f'AGENT "{name}"', 1)
-    else:
-        template = STARTER.format(name=name)
-    out.write_text(template, encoding="utf-8")
+    out.write_text(TEMPLATES[args.template].format(name=name), encoding="utf-8")
     print(f"Created {out}")
     print(f"  check:  ./forge check {out}")
     print(f"  run:    ./forge run {out}")
@@ -212,48 +245,53 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_repl(args: argparse.Namespace) -> int:
-    from forge_runtime import ForgeREPL, make_llm_client, ToolRegistry
+    from forge_runtime import ForgeREPL, make_llm_client
 
-    print("Forge REPL — paste a program, blank line to run. :quit to exit.")
-    ForgeREPL(tools=ToolRegistry(), llm=make_llm_client(args.llm)).run()
+    ForgeREPL(tools=_tools(args), llm=make_llm_client(args.llm)).run()
+    return 0
+
+
+def cmd_spec(args: argparse.Namespace) -> int:
+    from forge_runtime import language_spec
+
+    print(language_spec(_tools(args)))
+    return 0
+
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+    from forge_mcp import ForgeMCPServer, serve
+
+    serve(ForgeMCPServer(tools=_tools(args), llm=args.llm))
     return 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from forge_runtime import ollama_available, make_llm_client, ToolRegistry
+    from forge_runtime import _resolve_openai_compat, ollama_available, make_llm_client, ToolRegistry
 
+    key, base_url, model = _resolve_openai_compat()
     print("Forge doctor\n")
     print(f"  python:     {sys.version.split()[0]}")
     print(f"  forge root: {ROOT}")
     print(f"  ollama:     {'up ✓' if ollama_available() else 'down (optional)'}")
-    client = make_llm_client("mock")
-    print(f"  llm (mock): {type(client).__name__} ✓")
+    api = f"set ✓ ({base_url or 'api.openai.com'}, {model})" if key else "none (optional)"
+    print(f"  api key:    {api}")
+    print(f"  llm (auto): {type(make_llm_client('auto')).__name__}")
     print(f"  tools:      {', '.join(ToolRegistry().names())}")
     print("\nYou're ready. Run:")
     print("  ./forge quickstart")
+    print("  ./forge mcp          # give an AI agent Forge as a tool")
     return 0
 
 
 def cmd_tools(args: argparse.Namespace) -> int:
-    from forge_runtime import ToolRegistry
-
-    tools = ToolRegistry()
-    docs = {
-        "arithmetic_add": "INPUT { x, y } → number (x+y)",
-        "web_search": "INPUT { q, n } → list of mock search hits (offline demo)",
-        "get_value": "INPUT { } → 42",
-        "sales_data": "INPUT { region, period } → list of deals",
-        "http_get": "INPUT { url } → { status, body, ... }  (real HTTP)",
-        "read_file": "INPUT { path } → { body, chars }  (under cwd only)",
-        "write_file": "INPUT { path, body } → { ok, path }  (under cwd only)",
-    }
     print("Available tools\n")
-    for name in tools.names():
+    for name, doc in _tools(args).docs().items():
         print(f"  {name}")
-        print(f"    {docs.get(name, '')}")
+        print(f"    {doc}")
     print("\nExample:")
     print('  STEP fetch TOOL http_get INPUT { url: "https://example.com" } OUTPUT page')
     print('  REASON "Summarize" ON $page.body OUTPUT summary   # read one field')
+    print("\nAdd your own: ./forge run FILE.forge --tools my_tools.py")
     return 0
 
 
@@ -383,6 +421,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
             backend=args.backend,
             mode=args.mode,
             execute=not args.no_run,
+            retries=args.retries,
+            tools=_tools(args),
         )
     except Exception as e:
         print(_friendly_error(e), file=sys.stderr)
@@ -396,6 +436,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     print("\n=== status ===")
     print(f"parse_ok:   {out.get('parse_ok')}")
     print(f"runtime_ok: {out.get('runtime_ok')}")
+    print(f"attempts:   {out.get('attempts')}")
     if out.get("repair"):
         print(f"repair:     {out['repair']}")
     if out.get("error"):
@@ -450,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(BANNER)
-        print("\nCommands: quickstart · ask · credit-test · run · check · init · examples · tools · tokens · doctor · repl")
+        print("\nCommands: quickstart · run · check · ask · spec · mcp · init · examples · tools · tokens · doctor · repl · credit-test · bench")
         return 0
 
     p = argparse.ArgumentParser(
@@ -468,12 +509,15 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--llm", default="mock", help="mock|auto|ollama|openai")
     run_p.add_argument("--repair", action="store_true")
     run_p.add_argument("-q", "--quiet", action="store_true")
+    tools_help = "Python file of extra tools (repeatable)"
+    run_p.add_argument("--tools", action="append", help=tools_help)
     run_p.set_defaults(func=cmd_run)
 
     check_p = sub.add_parser("check", help="Validate a .forge program")
     check_p.add_argument("file")
     check_p.add_argument("--json", action="store_true")
     check_p.add_argument("--repair", action="store_true")
+    check_p.add_argument("--tools", action="append", help=tools_help)
     check_p.set_defaults(func=cmd_check)
 
     ex_p = sub.add_parser("examples", help="List or run demos")
@@ -495,7 +539,17 @@ def main(argv: list[str] | None = None) -> int:
     init_p.set_defaults(func=cmd_init)
 
     tools_p = sub.add_parser("tools", help="List built-in tools")
+    tools_p.add_argument("--tools", action="append", help=tools_help)
     tools_p.set_defaults(func=cmd_tools)
+
+    spec_p = sub.add_parser("spec", help="Print the compact language spec (for AI context)")
+    spec_p.add_argument("--tools", action="append", help=tools_help)
+    spec_p.set_defaults(func=cmd_spec)
+
+    mcp_p = sub.add_parser("mcp", help="Run as an MCP server over stdio (for AI agents)")
+    mcp_p.add_argument("--tools", action="append", help=tools_help)
+    mcp_p.add_argument("--llm", default="auto", help="Backend for REASON: auto|mock|ollama|openai")
+    mcp_p.set_defaults(func=cmd_mcp)
 
     tok_p = sub.add_parser("tokens", help="Estimate tokens vs Python/LangChain")
     tok_p.add_argument("file")
@@ -503,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
 
     repl_p = sub.add_parser("repl", help="Interactive REPL")
     repl_p.add_argument("--llm", default="mock")
+    repl_p.add_argument("--tools", action="append", help=tools_help)
     repl_p.set_defaults(func=cmd_repl)
 
     doc_p = sub.add_parser("doctor", help="Check setup")
@@ -516,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
     ask_p.add_argument("--hide-source", action="store_true", help="Don't print the generated program")
     ask_p.add_argument("--live-reason", action="store_true", help="Use the real LLM for REASON (default: mock)")
     ask_p.add_argument("--save", help="Save generated program to a .forge file")
+    ask_p.add_argument("--retries", type=int, default=2, help="Fix attempts after a failure (error fed back)")
+    ask_p.add_argument("--tools", action="append", help=tools_help)
     ask_p.set_defaults(func=cmd_ask)
 
     cred_p = sub.add_parser(

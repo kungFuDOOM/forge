@@ -101,61 +101,46 @@ def repair_forge(source: str) -> str:
     )
 
     # Strip junk lines that appear inside MEMORY before STEPs (e.g. "TOP PAPER 1")
+    # while keeping list / object values, including multi-line ones.
+    _VALUE = r'(-?\d+\.?\d*|true|false|null|"[^"]*"|\'[^\']*\'|\$[A-Za-z_][\w.]*|\[.*|\{.*)'
+    _ENTRY = re.compile(rf"^[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*{_VALUE}\s*,?\s*$", re.I)
+
     def _clean_memory_section(text: str) -> str:
-        lines = text.splitlines()
         out: list[str] = []
         in_memory = False
-        brace = 0
-        for line in lines:
+        depth = 0  # [ / { nesting inside MEMORY (outer brace included)
+        for line in text.splitlines():
             stripped = line.strip()
-            if re.match(r"^MEMORY\b", stripped):
-                in_memory = True
-                brace = stripped.count("{") - stripped.count("}")
+            code = _mask_strings(stripped)
+            if not in_memory and re.match(r"^MEMORY\b", stripped):
+                depth = code.count("{") + code.count("[") - code.count("}") - code.count("]")
+                # MEMORY { ... } closed on one line is done; flat form continues
+                in_memory = not ("{" in code and depth <= 0)
                 out.append(line)
-                if brace <= 0 and "{" not in stripped:
-                    # flat MEMORY form — keep until STEP/REASON/...
-                    pass
                 continue
-            if in_memory:
-                brace += stripped.count("{") - stripped.count("}")
-                if re.match(r"^(STEP|REASON|VERIFY|RETURN)\b", stripped):
-                    in_memory = False
-                    out.append(line)
-                    continue
-                # keep only valid flat entries / braces
-                valid_flat = re.match(
-                    r"^[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*"
-                    r'(\d+\.?\d*|true|false|null|"[^"]*"|\'[^\']*\'|\$[A-Za-z_][A-Za-z0-9_]*)\s*,?\s*$',
-                    stripped,
-                    re.I,
-                )
-                if (
-                    not stripped
-                    or stripped in "{}[],"
-                    or valid_flat
-                    or stripped.startswith("}")
-                    or stripped.startswith("{")
-                    or re.match(r"^MEMORY\b", stripped)
-                ):
-                    out.append(line)
-                # else drop junk (prose / fake nested fields)
-                if brace <= 0 and "{" in "".join(out[-3:]):
-                    in_memory = False
+            if not in_memory:
+                out.append(line)
                 continue
-            out.append(line)
+            if re.match(r"^(STEP|REASON|VERIFY|RETURN|AGENT)\b", stripped):
+                in_memory = False
+                out.append(line)
+                continue
+            inside_value = depth > 1  # within a list/object value, keep verbatim
+            if (
+                inside_value
+                or not stripped
+                or _ENTRY.match(stripped)
+                or stripped[0] in "{}[],"
+                or re.match(r"^MEMORY\b", stripped)
+            ):
+                out.append(line)
+                depth += code.count("{") + code.count("[") - code.count("}") - code.count("]")
+            # else: drop junk (prose / fake nested fields)
+            if depth <= 0 and "{" in "".join(out[-3:]):
+                in_memory = False
         return "\n".join(out)
 
     s = _clean_memory_section(s)
-
-    # Drop MEMORY blocks that contain unsupported array literals [...]
-    # including truncated / malformed ones; also stray ]
-    s = re.sub(
-        r"\bMEMORY\s*\{[\s\S]*?\[[\s\S]*?(?:\]\s*\}|\])",
-        "",
-        s,
-    )
-    s = re.sub(r"^\s*\]\s*$", "", s, flags=re.M)
-    s = re.sub(r",\s*\]", "", s)
 
     # Hoist MEMORY that LLMs emit before AGENT
     m_agent = re.search(r"\bAGENT\b[^\n]*", s)
@@ -173,7 +158,7 @@ def repair_forge(source: str) -> str:
     s = re.sub(r"`+", "", s)
 
     # KEEP FILTER / keep FILTER → STEP keep FILTER
-    s = re.sub(r"(?i)\bKEEP\s+FILTER\b", "STEP keep FILTER", s)
+    s = re.sub(r"(?im)^(\s*)KEEP\s+FILTER\b", r"\1STEP keep FILTER", s)
 
     # Cut trailing junk after RETURN (extra STEP/AGENT/prose/fences)
     ret = re.search(r"\bRETURN\b", _mask_strings(s))

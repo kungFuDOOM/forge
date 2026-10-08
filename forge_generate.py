@@ -22,28 +22,68 @@ from forge_repair import try_compile_repaired
 from forge_runtime import Evaluator, MockLLMClient, ToolRegistry, make_llm_client
 
 
+FIX_PROMPT = """{prompt}
+
+Your previous program:
+{program}
+
+It failed with:
+{error}
+
+Reply with the complete corrected Forge program only."""
+
+
 def generate_and_run(
     task: str,
     backend: str = "auto",
     mode: str = "text",
     execute: bool = True,
+    retries: int = 2,
+    tools: ToolRegistry | None = None,
+    llm_call=None,
 ) -> dict:
-    prompt = build_prompt(task, mode=mode)
-    response, usage = call_llm(prompt, backend=backend)
-    extracted = extract_code(response, prefer_json=(mode == "json"))
+    """
+    Ask an LLM for a Forge program, then repair → check → run it.
+    On failure the exact error is sent back to the model (up to `retries`
+    extra attempts); Forge errors name what is defined/available, so one
+    round usually fixes it. Usage from every attempt is summed.
+    """
+    llm_call = llm_call or (lambda prompt: call_llm(prompt, backend=backend))
+    tools = tools or ToolRegistry()
+    base_prompt = build_prompt(task, mode=mode)
+    prompt = base_prompt
+    usage_total: dict = {}
+    out: dict = {}
 
+    for attempt in range(1, retries + 2):
+        response, usage = llm_call(prompt)
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if usage.get(k) is not None:
+                usage_total[k] = usage_total.get(k, 0) + usage[k]
+        out = _attempt(task, mode, response, execute, tools, backend)
+        out["attempts"] = attempt
+        out["usage"] = {**usage, **usage_total}
+        if out["parse_ok"] and (not execute or out["runtime_ok"]):
+            return out
+        prompt = FIX_PROMPT.format(
+            prompt=base_prompt,
+            program=out.get("extracted") or response,
+            error=out.get("error", "unknown error"),
+        )
+    return out
+
+
+def _attempt(task: str, mode: str, response: str, execute: bool, tools: ToolRegistry, backend: str) -> dict:
     out: dict = {
         "task": task,
         "mode": mode,
-        "usage": usage,
         "raw_response": response,
-        "extracted": extracted,
+        "extracted": extract_code(response, prefer_json=(mode == "json")),
         "parse_ok": False,
         "runtime_ok": False,
     }
-
     try:
-        program, used, notes = try_compile_repaired(response if mode == "text" else extracted)
+        program, used, notes = try_compile_repaired(response if mode == "text" else out["extracted"])
         out["extracted"] = used
         out["parse_ok"] = True
         out["repair"] = notes
@@ -56,17 +96,13 @@ def generate_and_run(
         return out
 
     try:
-        # Use real LLM for REASON if backend is live; else mock
-        llm = make_llm_client("mock" if backend in ("mock", "dry") else backend)
-        # Prefer mock for deterministic demo unless --live-reason
-        if not getattr(generate_and_run, "_live_reason", False):
-            llm = MockLLMClient()
-        result = Evaluator(tools=ToolRegistry(), llm=llm).run(program)
+        # REASON uses the mock unless live reasoning was requested
+        live = getattr(generate_and_run, "_live_reason", False)
+        llm = make_llm_client(backend) if live and backend not in ("mock", "dry") else MockLLMClient()
+        out["result"] = Evaluator(tools=tools, llm=llm).run(program)
         out["runtime_ok"] = True
-        out["result"] = result
     except Exception as e:
         out["error"] = f"runtime: {e}"
-
     return out
 
 
@@ -81,6 +117,7 @@ def main() -> int:
         help="text surface syntax (default; best for small local models) or json AST",
     )
     p.add_argument("--no-run", action="store_true", help="Only generate + parse")
+    p.add_argument("--retries", type=int, default=2, help="Fix attempts after a failure (error fed back)")
     p.add_argument("--live-reason", action="store_true", help="Use real LLM for REASON blocks")
     p.add_argument("--show-source", action="store_true", help="Print generated Forge")
     args = p.parse_args()
@@ -93,6 +130,7 @@ def main() -> int:
             backend=args.backend,
             mode=args.mode,
             execute=not args.no_run,
+            retries=args.retries,
         )
     except Exception as e:
         print(f"Generation failed: {e}", file=sys.stderr)

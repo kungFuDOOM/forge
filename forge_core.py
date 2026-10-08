@@ -66,6 +66,12 @@ class ObjectLiteral(ASTNode):
 
 
 @dataclass
+class ArrayLiteral(ASTNode):
+    items: list  # ASTNode
+    node_type: str = field(default="array_literal")
+
+
+@dataclass
 class Comparison(ASTNode):
     left: Any  # ASTNode or field name (str) for FILTER field refs
     operator: str
@@ -174,6 +180,8 @@ def _ast_to_dict(node: Any) -> Any:
         d["name"] = node.name
     elif isinstance(node, ObjectLiteral):
         d["properties"] = {k: _ast_to_dict(v) for k, v in node.properties.items()}
+    elif isinstance(node, ArrayLiteral):
+        d["items"] = [_ast_to_dict(v) for v in node.items]
     elif isinstance(node, Comparison):
         d["left"] = _ast_to_dict(node.left) if isinstance(node.left, ASTNode) else node.left
         d["operator"] = node.operator
@@ -249,6 +257,12 @@ def dict_to_ast(data: Any) -> ASTNode:
         if not isinstance(props, dict):
             raise ForgeValidateError("object_literal.properties must be an object")
         return ObjectLiteral(properties={k: dict_to_ast(v) for k, v in props.items()})
+
+    if nt == "array_literal":
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise ForgeValidateError("array_literal.items must be a list")
+        return ArrayLiteral(items=[dict_to_ast(v) for v in items])
 
     if nt == "comparison":
         left_raw = data.get("left")
@@ -488,6 +502,9 @@ def check_program(program: Program, tool_names: Optional[list] = None) -> list[s
         elif isinstance(node, ObjectLiteral):
             for v in node.properties.values():
                 use_value(v, where)
+        elif isinstance(node, ArrayLiteral):
+            for v in node.items:
+                use_value(v, where)
 
     def use_comparison(cond: Comparison, where: str) -> None:
         # FILTER field refs (left_kind == "field") read list items, not memory
@@ -631,7 +648,7 @@ class Lexer:
                 continue
 
             # Punctuation — '=' accepted as alias for ':' (common LLM slip)
-            if ch in "{}:,=":
+            if ch in "{}[]:,=":
                 self._advance()
                 tok_ch = ":" if ch == "=" else ch
                 tokens.append(Token(tok_ch, tok_ch, line, col))
@@ -978,9 +995,23 @@ class Parser:
             return Literal(value=tok.value)
         if tok.type == "{":
             return self._parse_object()
+        if tok.type == "[":
+            return self._parse_array()
         raise ForgeParseError(
             f"Expected value, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
         )
+
+    def _parse_array(self) -> ArrayLiteral:
+        self._expect("[")
+        items: list[ASTNode] = []
+        while self._cur().type != "]":
+            if self._cur().type == "EOF":
+                raise ForgeParseError("Unterminated list literal")
+            items.append(self._parse_value())
+            if self._cur().type == ",":
+                self._advance()
+        self._expect("]")
+        return ArrayLiteral(items=items)
 
     def _parse_object(self) -> ObjectLiteral:
         self._expect("{")
