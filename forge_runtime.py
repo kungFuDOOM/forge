@@ -204,6 +204,55 @@ def chat_message(
     }
 
 
+class OllamaLLMClient(LLMClient):
+    """Free local LLM via Ollama (https://ollama.com). No API key required."""
+
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        host: Optional[str] = None,
+    ):
+        self.model = model or os.environ.get("OLLAMA_MODEL") or "llama3.2:1b"
+        self.host = (host or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
+
+    def complete(self, prompt: str, context: Any = None) -> str:
+        import urllib.error
+        import urllib.request
+
+        user_content = prompt
+        if context is not None:
+            user_content = f"{prompt}\n\nContext data:\n{json.dumps(context, default=str, indent=2)}"
+
+        body = json.dumps({
+            "model": self.model,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": "You are a concise reasoning assistant for an agent runtime."},
+                {"role": "user", "content": user_content},
+            ],
+            "options": {"temperature": 0.2},
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{self.host}/api/chat",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as e:
+            raise ForgeRuntimeError(
+                f"Ollama not reachable at {self.host}. "
+                f"Install from https://ollama.com then: ollama pull {self.model}\n"
+                f"Original error: {e}"
+            ) from e
+
+        msg = data.get("message") or {}
+        return msg.get("content") or data.get("response") or ""
+
+
 # Env vars that select an OpenAI-compatible provider, in priority order
 API_KEY_ENVS = (
     "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
