@@ -509,6 +509,120 @@ class TestProviders(unittest.TestCase):
                 OpenAILLMClient()
 
 
+FOUR_REGIONS_PROGRAM = '''AGENT "four"
+MEMORY { regions: ["north", "south", "east", "west"] }
+FOR EACH r IN $regions OUTPUT totals
+  STEP g TOOL sales_data INPUT { region: $r, period: "Q1" } OUTPUT d
+  STEP b FILTER amount > 10000 ON $d OUTPUT big
+  STEP s TOOL sum INPUT { list: $big, field: "amount" } OUTPUT t
+END
+STEP all TOOL sum INPUT { list: $totals } OUTPUT total
+RETURN $total'''
+
+
+def scripted_agent(messages, tools):
+    """Plays a competent agent for the four-regions task, in either mode."""
+    import json
+
+    names = {t["function"]["name"] for t in tools}
+    done = [m for m in messages if m["role"] == "tool"]
+
+    def call(name, args):
+        return {"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"c{len(done)}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+    if names == {"forge_run"}:
+        if not done:
+            return call("forge_run", {"source": FOUR_REGIONS_PROGRAM}), {}
+        return {"role": "assistant", "content": f"The total is {done[-1]['content']}."}, {}
+    regions = ["north", "south", "east", "west"]
+    if len(done) < 4:
+        return call("sales_data", {"region": regions[len(done)], "period": "Q1"}), {}
+    total = sum(d["amount"] for m in done for d in json.loads(m["content"]) if d["amount"] > 10000)
+    return {"role": "assistant", "content": f"The total is {total:,}."}, {}
+
+
+class TestAgentBench(unittest.TestCase):
+    def test_harness_counts_every_turn_and_checks_answers(self):
+        from forge_agent_bench import run_agent_bench
+
+        runs, summary = run_agent_bench(scripted_agent, ["four-regions"])
+        tools_run, forge_run_ = runs
+        self.assertTrue(tools_run.ok and forge_run_.ok, (tools_run.error, forge_run_.error))
+        self.assertEqual((tools_run.turns, tools_run.tool_calls), (5, 4))
+        self.assertEqual((forge_run_.turns, forge_run_.tool_calls), (2, 1))
+        self.assertTrue(summary["estimated_tokens"])  # scripted model reports no usage
+        self.assertEqual(summary["tasks_both_solved"], ["four-regions"])
+        self.assertGreater(summary["savings_on_tasks_both_solved_pct"], 0)
+
+    def test_wrong_answer_is_not_a_success(self):
+        from forge_agent_bench import run_agent_bench
+
+        def lazy(messages, tools):
+            return {"role": "assistant", "content": "About 100000."}, {"prompt_tokens": 50, "completion_tokens": 5}
+
+        runs, summary = run_agent_bench(lazy, ["four-regions"])
+        self.assertFalse(any(r.ok for r in runs))
+        self.assertEqual(runs[0].total_tokens, 55)
+        self.assertFalse(summary["estimated_tokens"])
+
+    def test_tool_schemas(self):
+        from forge_agent_bench import tool_schema
+
+        s = tool_schema("sort", "INPUT { list, by?, desc?, limit? } → sorted list")["function"]["parameters"]
+        self.assertEqual(s["required"], ["list"])
+        self.assertEqual(s["properties"]["list"]["type"], "array")
+        self.assertEqual(s["properties"]["desc"]["type"], "boolean")
+        f = tool_schema("format", "INPUT { template, ...values } → string")["function"]["parameters"]
+        self.assertTrue(f["additionalProperties"])
+        p = tool_schema("http_post", "INPUT { url, json? | body?, headers? } → x")["function"]["parameters"]
+        self.assertEqual(p["required"], ["url"])
+
+    def test_real_http_tool_calling_loop(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from unittest import mock
+
+        from forge_agent_bench import make_call, run_agent_bench
+
+        bodies = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                bodies.append(body)
+                message, _ = scripted_agent(body["messages"], body["tools"])
+                payload = json.dumps({"choices": [{"message": message}],
+                                      "usage": {"prompt_tokens": 100, "completion_tokens": 10}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        env = {"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": f"http://127.0.0.1:{httpd.server_port}/v1"}
+        try:
+            with mock.patch.dict(os.environ, env, clear=True):
+                call, _ = make_call("openai", "test-model")
+                runs, summary = run_agent_bench(call, ["four-regions"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertTrue(all(r.ok for r in runs), [r.error for r in runs])
+        self.assertEqual([r.total_tokens for r in runs], [550, 220])  # 5 turns vs 2 turns
+        self.assertEqual(summary["token_savings_pct"], 60.0)
+        self.assertEqual(bodies[0]["model"], "test-model")
+        self.assertEqual(bodies[0]["tool_choice"], "auto")
+        # tool results go back to the model as role=tool messages with the call id
+        self.assertEqual(bodies[1]["messages"][-1]["role"], "tool")
+        self.assertEqual(bodies[1]["messages"][-1]["tool_call_id"], "c0")
+
+
 class TestCLI(unittest.TestCase):
     def test_init_templates_check_clean(self):
         import contextlib

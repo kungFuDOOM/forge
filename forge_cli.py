@@ -412,6 +412,12 @@ def cmd_credit_test(args: argparse.Namespace) -> int:
     return credit_main(argv)
 
 
+def cmd_agent_bench(args: argparse.Namespace) -> int:
+    from forge_agent_bench import main as agent_bench_main
+
+    return agent_bench_main(args.rest)
+
+
 def cmd_ask(args: argparse.Namespace) -> int:
     """Natural language → Forge → run. The AI-native usage path."""
     from forge_generate import generate_and_run
@@ -500,8 +506,13 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(BANNER)
-        print("\nCommands: quickstart · run · check · ask · spec · mcp · init · examples · tools · tokens · doctor · repl · credit-test · bench")
+        print("\nCommands: quickstart · run · check · ask · spec · mcp · init · examples · tools · tokens · doctor · repl · agent-bench · credit-test · bench")
         return 0
+
+    if argv[0] == "agent-bench":  # its own flags pass straight through
+        from forge_agent_bench import main as agent_bench_main
+
+        return agent_bench_main(argv[1:])
 
     p = argparse.ArgumentParser(
         prog="forge",
@@ -610,6 +621,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Max attempts per leg; charges all tries (default 1)",
     )
     cred_p.set_defaults(func=cmd_credit_test)
+
+    ab_p = sub.add_parser(
+        "agent-bench",
+        help="Agent tokens: tool-by-tool vs one forge_run call (same tasks, same model)",
+        add_help=False,
+    )
+    ab_p.add_argument("rest", nargs=argparse.REMAINDER)
+    ab_p.set_defaults(func=cmd_agent_bench)
 
     bench_p = sub.add_parser("bench", help="LLM generation benchmark")
     bench_p.add_argument("--backend", default="auto")

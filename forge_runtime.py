@@ -131,8 +131,29 @@ def chat_completion(
 ) -> tuple[str, dict]:
     """
     OpenAI-compatible /chat/completions over stdlib HTTP (no openai package).
-    Works with Groq, Gemini, OpenRouter, OpenAI, DeepSeek. Returns (text, usage).
+    Works with Groq, Gemini, OpenRouter, xAI, OpenAI, DeepSeek. Returns (text, usage).
     """
+    message, usage = chat_message(
+        messages, api_key=api_key, base_url=base_url, model=model, temperature=temperature,
+        max_tokens=max_tokens, stop=stop, timeout=timeout,
+    )
+    return message.get("content") or "", usage
+
+
+def chat_message(
+    messages: list,
+    *,
+    tools: Optional[list] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    max_tokens: Optional[int] = None,
+    stop: Optional[list] = None,
+    timeout: float = 120,
+) -> tuple[dict, dict]:
+    """Like chat_completion, but supports tool calling and returns the whole
+    assistant message (content + tool_calls) and usage."""
     import urllib.error
     import urllib.request
 
@@ -148,13 +169,16 @@ def chat_completion(
         body["max_tokens"] = max_tokens
     if stop:
         body["stop"] = stop
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": "ForgeAgent/0.2",
+            "User-Agent": "ForgeAgent/0.4",
         },
         method="POST",
     )
@@ -168,9 +192,9 @@ def chat_completion(
         raise ForgeRuntimeError(f"LLM API not reachable at {url}: {e}") from e
 
     choices = data.get("choices") or [{}]
-    text = ((choices[0].get("message") or {}).get("content")) or ""
+    message = choices[0].get("message") or {}
     usage = data.get("usage") or {}
-    return text, {
+    return message, {
         "backend": "openai",
         "model": model,
         "base_url": base_url,
@@ -178,55 +202,6 @@ def chat_completion(
         "completion_tokens": usage.get("completion_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
-
-
-class OllamaLLMClient(LLMClient):
-    """Free local LLM via Ollama (https://ollama.com). No API key required."""
-
-    def __init__(
-        self,
-        model: Optional[str] = None,
-        host: Optional[str] = None,
-    ):
-        self.model = model or os.environ.get("OLLAMA_MODEL") or "llama3.2:1b"
-        self.host = (host or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
-
-    def complete(self, prompt: str, context: Any = None) -> str:
-        import urllib.error
-        import urllib.request
-
-        user_content = prompt
-        if context is not None:
-            user_content = f"{prompt}\n\nContext data:\n{json.dumps(context, default=str, indent=2)}"
-
-        body = json.dumps({
-            "model": self.model,
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": "You are a concise reasoning assistant for an agent runtime."},
-                {"role": "user", "content": user_content},
-            ],
-            "options": {"temperature": 0.2},
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"{self.host}/api/chat",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.URLError as e:
-            raise ForgeRuntimeError(
-                f"Ollama not reachable at {self.host}. "
-                f"Install from https://ollama.com then: ollama pull {self.model}\n"
-                f"Original error: {e}"
-            ) from e
-
-        msg = data.get("message") or {}
-        return msg.get("content") or data.get("response") or ""
 
 
 # Env vars that select an OpenAI-compatible provider, in priority order

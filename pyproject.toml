@@ -19,6 +19,7 @@ Homepage = "https://github.com/kungFuDOOM/forge"
 
 [tool.setuptools]
 py-modules = [
+    "forge_agent_bench",
     "forge_benchmark",
     "forge_cli",
     "forge_core",

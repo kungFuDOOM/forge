@@ -1,0 +1,28 @@
+{
+  "name": "forge-lang",
+  "displayName": "Forge",
+  "description": "Syntax highlighting for Forge (.forge), the AI-native agent language",
+  "version": "0.4.0",
+  "publisher": "kungfudoom",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/kungFuDOOM/forge" },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "forge",
+        "aliases": ["Forge", "forge"],
+        "extensions": [".forge"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "forge",
+        "scopeName": "source.forge",
+        "path": "./syntaxes/forge.tmLanguage.json"
+      }
+    ]
+  }
+}
