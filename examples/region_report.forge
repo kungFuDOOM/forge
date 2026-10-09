@@ -1,0 +1,20 @@
+AGENT "region-report"
+
+MEMORY {
+  regions: ["north", "south", "east", "west"]
+}
+
+# Run the deal-triage program for every region at once
+PARALLEL FOR EACH r IN $regions OUTPUT reports
+  TRY
+    STEP triage RUN "deal_triage.forge" INPUT { region: $r } OUTPUT result RETRY 1
+    YIELD { region: $r, at_stake: $result.at_stake, deals: $result.flagged }
+  ON ERROR
+    YIELD { region: $r, error: $error }
+  END
+END
+
+STEP total TOOL sum INPUT { list: $reports, field: "at_stake" } OUTPUT at_stake
+STEP top TOOL sort INPUT { list: $reports, by: "at_stake", desc: true } OUTPUT ranked
+
+RETURN { total_at_stake: $at_stake, regions: $ranked }

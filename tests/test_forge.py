@@ -75,7 +75,7 @@ class TestExamples(unittest.TestCase):
                         if "write_file" in src:
                             os.chdir(tmp)  # keep the repo clean
                         try:
-                            run(src, tools)
+                            run_forge(src, tools=tools, llm=MockLLMClient(), base_dir=str(path.parent))
                         finally:
                             os.chdir(ROOT)
         finally:
@@ -1199,10 +1199,14 @@ class TestWebsitePlayground(unittest.TestCase):
         examples = {k: self._js_template(v) for k, v in re.findall(r'"([^"]+)": `([\s\S]*?)`,', block)}
         self.assertGreaterEqual(len(examples), 4)
 
+        files = json.loads(re.search(r"const FILES = (\[[^\]]*\]);", page).group(1))
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
+                for f in files:  # the page copies these into the browser's filesystem
+                    Path(f).parent.mkdir(parents=True, exist_ok=True)
+                    Path(f).write_text((ROOT / f).read_text(encoding="utf-8"), encoding="utf-8")
                 ns: dict = {}
                 exec(compile(bridge, "playground-bridge", "exec"), ns)
                 play = ns["forge_play"]
@@ -1217,6 +1221,9 @@ class TestWebsitePlayground(unittest.TestCase):
                         else:
                             self.assertTrue(run["ok"], run["output"])
                             self.assertTrue(ast["ok"])
+                            self.assertNotIn('"error"', run["output"])
+                        if "Parallel" in name:
+                            self.assertEqual(json.loads(run["output"])["total_at_stake"], 148000)
                 offline = json.loads(play("run", 'AGENT "n"\nSTEP g TOOL http_get INPUT { url: "https://x" } OUTPUT p\nRETURN $p'))
                 self.assertIn("browser playground", offline["output"])
             finally:

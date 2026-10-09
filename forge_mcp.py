@@ -23,7 +23,7 @@ from typing import Any, Callable, Optional, TextIO
 from forge_core import check_program, compile_auto, validate_ast
 from forge_runtime import ToolRegistry, language_spec, make_llm_client, run_program
 
-SERVER_INFO = {"name": "forge", "version": "0.3.0"}
+SERVER_INFO = {"name": "forge", "version": "0.4.0"}
 DEFAULT_PROTOCOL = "2024-11-05"
 
 

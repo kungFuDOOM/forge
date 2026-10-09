@@ -43,8 +43,18 @@ This is where Forge saves credits. An agent that does *fetch → check → filte
 with ordinary tools makes one round trip per step, and every round trip re-sends the whole
 conversation. With Forge it writes one short program and runs it in **one** tool call.
 
+**Claude Code plugin (easiest).** Installs the MCP server plus a skill that tells Claude
+when one program beats many tool calls. Needs only Python 3.10+:
+
+```
+/plugin install forge --marketplace kungFuDOOM/forge
+```
+
+On Claude Code before 2.1.275: `/plugin marketplace add kungFuDOOM/forge`, then `/plugin install forge@forge-lang`.
+
+**Or add just the MCP server:**
+
 ```bash
-# Claude Code
 claude mcp add forge -- python3 /path/to/forge/forge_cli.py mcp
 # or, after pip install
 claude mcp add forge -- forge mcp
@@ -97,12 +107,15 @@ END
 
 - **Field access:** `$page.text`, `$hits.0.title` read one field of a tool result, so REASON only sends the LLM what it needs. `http_get` returns `text`, the readable page without HTML markup, which is usually several times fewer tokens than `body`.
 - **Loops & branches:** `FOR EACH … END` collects `YIELD`ed values into its `OUTPUT`; `IF … ELSE … END`; conditions combine with `AND` / `OR` and support `CONTAINS`.
+- **Parallel:** `PARALLEL 8 FOR EACH … END` runs up to 8 iterations at once, so 10 page fetches take about as long as 2. Results keep their order.
+- **Failures:** `… OUTPUT page RETRY 2` retries a flaky step; `TRY … ON ERROR … END` runs a fallback with `$error` set.
+- **Reuse:** `STEP s RUN "other.forge" INPUT { region: $r } OUTPUT x` runs another program, with INPUT replacing its MEMORY. See [examples/region_report.forge](examples/region_report.forge).
 - **Lists:** `MEMORY { deals: [{ name: "Acme", amount: 15000 }], tags: ["a", "b"] }`
 - **VERIFY anywhere:** use as many as you like. A failed VERIFY stops the program *before* the next tool or LLM call.
 - **Pre-run check:** undefined `$vars`, unknown tools and YIELD outside a loop are caught before anything executes, all reported at once.
-- **Safe to hand to an agent:** step budget (default 10,000), optional time budget (`--timeout`; MCP defaults to 300 s), and a cap on what one REASON sends to the LLM.
+- **Safe to hand to an agent:** step budget (default 10,000), optional time budget (`--timeout`; MCP defaults to 300 s), files limited to the working directory, cloud-metadata addresses blocked, and a cap on what one REASON sends to the LLM. See [SECURITY.md](SECURITY.md).
 
-Full reference (about 700 tokens including every tool, written for an AI's context window): `./forge spec`
+Full reference (about 800 tokens including every tool, written for an AI's context window): `./forge spec`
 
 ---
 
@@ -175,6 +188,7 @@ Any provider: pick a specific model with `export FORGE_LLM_MODEL=…`.
 ./forge tokens FILE      # rough token vs Python/LangChain
 ./forge doctor           # setup check
 ./forge repl             # interactive
+./forge agent-bench      # agent tokens: tool-by-tool vs one forge_run call (see AGENT_BENCH.md)
 ./forge credit-test      # Forge vs Python credits (see CREDIT_TEST.md)
 ./forge bench            # LLM generation benchmark (see BENCH.md)
 ```
@@ -185,10 +199,15 @@ Same via `python3 forge_cli.py …`.
 
 ## Design
 
-- Primitives: `AGENT` `MEMORY` `STEP` `TOOL` `FILTER` `REASON` `VERIFY` `FOR EACH` `IF` `YIELD` `RETURN`
+- Primitives: `AGENT` `MEMORY` `STEP` `TOOL` `FILTER` `REASON` `VERIFY` `FOR EACH` `PARALLEL` `IF` `TRY` `RETRY` `RUN` `YIELD` `RETURN`
 - Dual path: text syntax **or** JSON AST
 - Pipeline: emit → repair → validate → check → run
-- See [VISION.md](VISION.md) · [BENCH.md](BENCH.md) · [CREDIT_TEST.md](CREDIT_TEST.md)
+- See [VISION.md](VISION.md) · [AGENT_BENCH.md](AGENT_BENCH.md) · [BENCH.md](BENCH.md) · [CREDIT_TEST.md](CREDIT_TEST.md) · [SECURITY.md](SECURITY.md)
+
+## Editor support
+
+- **VS Code:** highlighting, folding and auto-indent for `.forge` files. See [editors/vscode](editors/vscode/README.md).
+- The TextMate grammar in `editors/vscode/syntaxes/` also works in Sublime Text, Zed, JetBrains IDEs and Shiki.
 
 ## Tests
 

@@ -682,7 +682,7 @@ def _brave_search(q: str, n: int) -> list:
     req = urllib.request.Request(url, headers={
         "Accept": "application/json",
         "X-Subscription-Token": os.environ["BRAVE_SEARCH_API_KEY"],
-        "User-Agent": "ForgeAgent/0.3",
+        "User-Agent": "ForgeAgent/0.4",
     })
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -821,7 +821,7 @@ def _register_data_tools(reg: "ToolRegistry") -> None:
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
             raise ForgeRuntimeError("http_post only allows http:// or https:// URLs")
         check_url(url)
-        headers = {"User-Agent": "ForgeAgent/0.3", **(i.get("headers") or {})}
+        headers = {"User-Agent": "ForgeAgent/0.4", **(i.get("headers") or {})}
         if "json" in i:
             data = json.dumps(i["json"], default=str).encode("utf-8")
             headers.setdefault("Content-Type", "application/json")
@@ -1089,7 +1089,7 @@ class Evaluator:
             child._exec_block(loop.body)
             return [child.memory.get(implicit)] if implicit else child._collector
 
-        if loop.parallel and len(items) > 1:
+        if loop.parallel and len(items) > 1 and _threads_available():
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=min(loop.parallel, len(items))) as pool:
@@ -1303,6 +1303,13 @@ class Evaluator:
         else:
             r = str(cond.right)
         return f"{l} {cond.operator} {r}"
+
+
+def _threads_available() -> bool:
+    """False in WebAssembly builds (the browser playground), where PARALLEL runs sequentially."""
+    import sys
+
+    return sys.platform not in ("emscripten", "wasi")
 
 
 def _has_yield(steps: list) -> bool:
