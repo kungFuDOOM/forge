@@ -362,6 +362,63 @@ def make_llm_client(prefer: Optional[str] = None) -> LLMClient:
 
 ToolFn = Callable[[dict], Any]
 
+MAX_FETCH_BYTES = 10_000_000  # largest response http_get / http_post will read
+MAX_FILE_BYTES = 10_000_000  # largest file read_file / write_file will handle
+
+# Cloud instance-metadata endpoints hand out credentials; never reachable from a program.
+_METADATA_HOSTS = {"metadata.google.internal", "metadata.goog", "metadata", "instance-data"}
+_METADATA_IPS = {"169.254.169.254", "169.254.170.2", "fd00:ec2::254", "100.100.100.200"}
+
+
+def check_url(url: str) -> None:
+    """
+    Refuse URLs a program must not reach: non-http(s) schemes, and cloud
+    metadata / link-local addresses (the classic SSRF credential theft).
+    With FORGE_HTTP_BLOCK_PRIVATE=1, also loopback and private networks.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ForgeRuntimeError(f"Only http:// and https:// URLs are allowed: {url}")
+    host = parts.hostname.lower().rstrip(".")
+    if host in _METADATA_HOSTS:
+        raise ForgeRuntimeError(f"Blocked: {host} is a cloud metadata endpoint")
+    strict = os.environ.get("FORGE_HTTP_BLOCK_PRIVATE") == "1"
+    try:
+        addrs = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+            addrs = {ipaddress.ip_address(info[4][0].split("%")[0])
+                     for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+        except (socket.gaierror, UnicodeError, ValueError):
+            return  # can't resolve locally (e.g. behind a proxy); let the request report it
+    for addr in addrs:
+        mapped = getattr(addr, "ipv4_mapped", None)
+        for a in (addr, mapped) if mapped else (addr,):
+            if str(a) in _METADATA_IPS or a.is_link_local:
+                raise ForgeRuntimeError(f"Blocked: {host} resolves to a link-local/metadata address ({a})")
+            if strict and (a.is_private or a.is_loopback or a.is_reserved or a.is_unspecified or a.is_multicast):
+                raise ForgeRuntimeError(
+                    f"Blocked: {host} resolves to a private address ({a}) and FORGE_HTTP_BLOCK_PRIVATE=1"
+                )
+
+
+def _safe_urlopen(req: Any, timeout: float = 20) -> Any:
+    """urlopen that re-checks every redirect target with check_url."""
+    import urllib.request
+
+    class _Redirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            check_url(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    check_url(req.full_url)
+    return urllib.request.build_opener(_Redirects).open(req, timeout=timeout)
+
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -458,14 +515,14 @@ class ToolRegistry:
                 raise ForgeRuntimeError("http_get requires string input: url")
             if not url.startswith(("http://", "https://")):
                 raise ForgeRuntimeError("http_get only allows http:// or https:// URLs")
-            max_bytes = int(inputs.get("max_bytes", 100_000) or 100_000)
+            max_bytes = min(int(inputs.get("max_bytes", 100_000) or 100_000), MAX_FETCH_BYTES)
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "ForgeAgent/0.1"},
+                headers={"User-Agent": "ForgeAgent/0.4"},
                 method="GET",
             )
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with _safe_urlopen(req, timeout=20) as resp:
                     raw = resp.read(max_bytes + 1)
                     truncated = len(raw) > max_bytes
                     body = raw[:max_bytes].decode("utf-8", errors="replace")
@@ -492,6 +549,8 @@ class ToolRegistry:
                     "chars": len(body),
                     "error": str(e),
                 }
+            except ForgeRuntimeError:
+                raise
             except Exception as e:
                 raise ForgeRuntimeError(f"http_get failed: {e}") from e
 
@@ -515,8 +574,9 @@ class ToolRegistry:
                 ) from e
             if not p.exists() or not p.is_file():
                 raise ForgeRuntimeError(f"File not found: {path}")
-            max_bytes = int(inputs.get("max_bytes", 200_000) or 200_000)
-            data = p.read_bytes()[: max_bytes + 1]
+            max_bytes = min(int(inputs.get("max_bytes", 200_000) or 200_000), MAX_FILE_BYTES)
+            with p.open("rb") as fh:  # never load more than needed
+                data = fh.read(max_bytes + 1)
             truncated = len(data) > max_bytes
             text = data[:max_bytes].decode("utf-8", errors="replace")
             return {
@@ -549,6 +609,8 @@ class ToolRegistry:
                 ) from e
             p.parent.mkdir(parents=True, exist_ok=True)
             text = body if isinstance(body, str) else json.dumps(body, indent=2, default=str)
+            if len(text) > MAX_FILE_BYTES:
+                raise ForgeRuntimeError(f"write_file body is over the {MAX_FILE_BYTES:,}-character limit")
             p.write_text(text, encoding="utf-8")
             return {"path": str(p.relative_to(cwd)), "chars": len(text), "ok": True}
 
@@ -689,11 +751,20 @@ def _register_data_tools(reg: "ToolRegistry") -> None:
         )
 
     def fmt(i: dict) -> Any:
+        # Only {name} placeholders ({{ and }} for literal braces). Unlike
+        # str.format there is no {x.attr} / {x[0]} traversal of objects.
         values = {k: v for k, v in i.items() if k != "template"}
-        try:
-            return str(need(i, "template")).format(**values)
-        except (KeyError, IndexError, ValueError) as e:
-            raise ForgeRuntimeError(f"format: template needs {e} (give it as an INPUT key)") from e
+
+        def sub(m: "_re.Match") -> str:
+            if m.group(0) in ("{{", "}}"):
+                return m.group(0)[0]
+            key = m.group(1)
+            if key not in values:
+                raise ForgeRuntimeError(f"format: template needs '{key}' (give it as an INPUT key)")
+            v = values[key]
+            return v if isinstance(v, str) else json.dumps(v, default=str)
+
+        return _re.sub(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, str(need(i, "template")))
 
     def calc(i: dict) -> Any:
         op, x, y = need(i, "op"), need(i, "x"), i.get("y", 0)
@@ -718,8 +789,11 @@ def _register_data_tools(reg: "ToolRegistry") -> None:
             raise ForgeRuntimeError(f"sum: non-numeric values: {e}") from e
 
     def regex_find(i: dict) -> Any:
+        pattern, text = str(need(i, "pattern")), str(need(i, "text"))
+        if len(pattern) > 1000 or len(text) > 1_000_000:
+            raise ForgeRuntimeError("regex_find: pattern max 1000 chars, text max 1,000,000 chars")
         try:
-            return _re.findall(str(need(i, "pattern")), str(need(i, "text")))[: int(i.get("limit", 100))]
+            return _re.findall(pattern, text)[: int(i.get("limit", 100))]
         except _re.error as e:
             raise ForgeRuntimeError(f"regex_find: bad pattern: {e}") from e
 
@@ -746,6 +820,7 @@ def _register_data_tools(reg: "ToolRegistry") -> None:
         url = need(i, "url")
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
             raise ForgeRuntimeError("http_post only allows http:// or https:// URLs")
+        check_url(url)
         headers = {"User-Agent": "ForgeAgent/0.3", **(i.get("headers") or {})}
         if "json" in i:
             data = json.dumps(i["json"], default=str).encode("utf-8")
@@ -754,10 +829,12 @@ def _register_data_tools(reg: "ToolRegistry") -> None:
             data = str(i.get("body", "")).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with _safe_urlopen(req, timeout=20) as resp:
                 status, ctype, raw = resp.status, resp.headers.get("Content-Type", ""), resp.read(100_000)
         except urllib.error.HTTPError as e:
             status, ctype, raw = e.code, (e.headers.get("Content-Type", "") if e.headers else ""), (e.read(100_000) if e.fp else b"")
+        except ForgeRuntimeError:
+            raise
         except Exception as e:
             raise ForgeRuntimeError(f"http_post failed: {e}") from e
         body = raw.decode("utf-8", errors="replace")

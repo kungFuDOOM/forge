@@ -242,6 +242,97 @@ class TestFileSandbox(unittest.TestCase):
                     tools.call(name, inputs)
 
 
+class TestSecurity(unittest.TestCase):
+    def setUp(self):
+        self.t = ToolRegistry()
+
+    def test_metadata_and_link_local_blocked(self):
+        for url in ("http://169.254.169.254/latest/meta-data/", "http://[::ffff:169.254.169.254]/",
+                    "http://metadata.google.internal/computeMetadata/v1/", "http://169.254.1.1/",
+                    "http://[fd00:ec2::254]/"):
+            for tool in ("http_get", "http_post"):
+                with self.subTest(url=url, tool=tool), self.assertRaisesRegex(ForgeRuntimeError, "Blocked"):
+                    self.t.call(tool, {"url": url})
+        with self.assertRaisesRegex(ForgeRuntimeError, "only allows http"):
+            self.t.call("http_get", {"url": "file:///etc/passwd"})
+
+    def _server(self, handler_cls):
+        import threading
+        from http.server import HTTPServer
+
+        httpd = HTTPServer(("127.0.0.1", 0), handler_cls)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return f"http://127.0.0.1:{httpd.server_port}"
+
+    def test_redirect_to_metadata_blocked(self):
+        from http.server import BaseHTTPRequestHandler
+
+        class Redirect(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://169.254.169.254/latest/meta-data/iam/")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        base = self._server(Redirect)
+        with self.assertRaisesRegex(ForgeRuntimeError, "Blocked"):
+            self.t.call("http_get", {"url": base + "/"})
+
+    def test_private_networks_allowed_unless_strict(self):
+        from http.server import BaseHTTPRequestHandler
+        from unittest import mock
+
+        class Ok(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"hi")
+
+            def log_message(self, *a):
+                pass
+
+        base = self._server(Ok)
+        self.assertEqual(self.t.call("http_get", {"url": base})["body"], "hi")
+        with mock.patch.dict(os.environ, {"FORGE_HTTP_BLOCK_PRIVATE": "1"}):
+            with self.assertRaisesRegex(ForgeRuntimeError, "private address"):
+                self.t.call("http_get", {"url": base})
+
+    def test_file_size_limits(self):
+        from forge_runtime import MAX_FILE_BYTES
+
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                Path("big.txt").write_bytes(b"x" * (MAX_FILE_BYTES + 10))
+                out = self.t.call("read_file", {"path": "big.txt", "max_bytes": 10**12})
+                self.assertTrue(out["truncated"])
+                self.assertEqual(out["chars"], MAX_FILE_BYTES)
+                with self.assertRaisesRegex(ForgeRuntimeError, "limit"):
+                    self.t.call("write_file", {"path": "w.txt", "body": "y" * (MAX_FILE_BYTES + 1)})
+            finally:
+                os.chdir(cwd)
+
+    def test_format_has_no_attribute_traversal(self):
+        # {x.attr} is not a placeholder: it stays literal text, nothing is read
+        out = self.t.call("format", {"template": "{x.__class__} {{x}} {n} {o}", "x": "s", "n": 2, "o": {"a": 1}})
+        self.assertEqual(out, "{x.__class__} {x} 2 {\"a\": 1}")
+
+    def test_regex_input_limits(self):
+        with self.assertRaisesRegex(ForgeRuntimeError, "pattern max"):
+            self.t.call("regex_find", {"pattern": "a" * 2000, "text": "a"})
+
+    def test_repair_skips_huge_input(self):
+        with self.assertRaises(ForgeParseError):
+            try_compile_repaired("agent x\n" + "junk " * 60_000)
+
+
+
 class TestCreditSandbox(unittest.TestCase):
     def test_generated_python_is_sandboxed(self):
         from forge_credit_test import eval_python
@@ -250,6 +341,13 @@ class TestCreditSandbox(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("open", err)
         ok, err, _ = eval_python("def run(tools, llm):\n    return {'x': ().__class__}")
+        self.assertFalse(ok)
+        frame = ("def run(tools, llm):\n    g = (x for x in [1])\n"
+                 "    return {'b': list(g.gi_frame.f_globals)}")
+        ok, err, _ = eval_python(frame)
+        self.assertFalse(ok)
+        self.assertIn("not allowed", err)
+        ok, err, _ = eval_python("def run(tools, llm):\n    return {'t': tools._tools}")
         self.assertFalse(ok)
 
     def test_normal_python_still_runs(self):

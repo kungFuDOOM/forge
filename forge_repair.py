@@ -19,6 +19,7 @@ KEYWORDS = (
     "PARALLEL", "TRY", "ERROR", "RETRY", "RUN",
 )
 _KEYWORD_SET = set(KEYWORDS)
+MAX_REPAIR_CHARS = 200_000
 # Words right after these are names, never keywords (STEP end, OUTPUT input)
 _NAME_AFTER = {"STEP", "OUTPUT", "TOOL", "EACH", "FOR"}
 # ...except these keywords, which legitimately follow OUTPUT name / FOR
@@ -356,6 +357,8 @@ def try_compile_repaired(source: str):
     from forge_core import compile_auto, ForgeError
 
     notes: list[str] = []
+    if len(source) > MAX_REPAIR_CHARS:  # regex repairs are for LLM-sized text only
+        return compile_auto(source), source, notes
     # Prefer repaired forms first — a parseable-but-wrong unrepaired
     # program (e.g. OUTPUT value while body uses $raw) should not win.
     candidates = [

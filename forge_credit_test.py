@@ -338,6 +338,13 @@ def _extract_python(text: str) -> str:
     return raw
 
 
+# Frame / code / generator introspection: a route from any object back to
+# real globals and builtins. Blocked along with every _private attribute.
+_FRAME_ATTRS = {
+    "gi_frame", "gi_code", "cr_frame", "cr_code", "ag_frame", "ag_code", "tb_frame", "tb_next",
+    "f_back", "f_globals", "f_builtins", "f_locals", "f_code", "func_globals", "co_code", "mro",
+}
+
 # Builtins visible to generated Python: enough for agent glue, nothing that
 # touches the filesystem, network, or interpreter (open, __import__, eval, ...).
 _SAFE_BUILTINS = {
@@ -369,8 +376,8 @@ def eval_python(text: str) -> tuple[bool, Optional[str], str]:
     for n in ast.walk(tree):
         if isinstance(n, (ast.Import, ast.ImportFrom)):
             return False, "Imports not allowed in credit-test Python", code
-        if isinstance(n, ast.Attribute) and n.attr.startswith("__"):
-            return False, "Dunder attribute access not allowed in credit-test Python", code
+        if isinstance(n, ast.Attribute) and (n.attr.startswith("_") or n.attr in _FRAME_ATTRS):
+            return False, f"Attribute {n.attr!r} not allowed in credit-test Python", code
 
     tools = ToolRegistry()
     llm = MockLLMClient()
