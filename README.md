@@ -151,7 +151,11 @@ LLM backends (all plain HTTP, no SDKs):
 |---------|-------|
 | Ollama (free, local) | `./start_ollama.sh && ollama pull llama3.2` |
 | Groq / Gemini / OpenRouter (free tiers) | `export GROQ_API_KEY=…` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` |
+| xAI Grok | `export XAI_API_KEY=…` (or `GROK_API_KEY`); uses `grok-latest` |
 | OpenAI / DeepSeek | `export OPENAI_API_KEY=…` / `DEEPSEEK_API_KEY` |
+
+Note: **Groq** (with a q) is a company that hosts free open models; **Grok** (with a k) is xAI's model. Forge supports both.
+Any provider: pick a specific model with `export FORGE_LLM_MODEL=…`.
 
 ---
 

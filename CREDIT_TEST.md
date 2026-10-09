@@ -9,7 +9,7 @@ Yes:
 # lean = steady-state (minimal teach prompt):
 ./forge credit-test --backend ollama --tasks 5 --lean --retries 3
 # paid key:
-export GROQ_API_KEY=...   # or GEMINI / OPENAI / OPENROUTER
+export GROQ_API_KEY=...   # or GEMINI / XAI (Grok) / OPENAI / OPENROUTER
 ./forge credit-test --backend openai --tasks 5 --retries 3
 ```
 

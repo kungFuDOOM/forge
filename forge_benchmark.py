@@ -16,6 +16,8 @@ Free backends (no paid credits):
   python forge_benchmark.py --backend openai
 
   export OPENROUTER_API_KEY=...   # has :free models
+
+  export XAI_API_KEY=...          # xAI Grok (paid)
   python forge_benchmark.py --backend openai
 
 Paid / existing:
@@ -46,6 +48,7 @@ from forge_runtime import (
     OllamaLLMClient,
     Evaluator,
     ForgeVerifyError,
+    has_api_key,
     ollama_available,
 )
 
@@ -368,23 +371,13 @@ def call_llm(
     if backend == "auto":
         if ollama_available():
             backend = "ollama"
-        elif any(
-            os.environ.get(k)
-            for k in (
-                "GROQ_API_KEY",
-                "GEMINI_API_KEY",
-                "GOOGLE_API_KEY",
-                "OPENROUTER_API_KEY",
-                "OPENAI_API_KEY",
-                "DEEPSEEK_API_KEY",
-            )
-        ):
+        elif has_api_key():
             backend = "openai"
         else:
             raise RuntimeError(
                 "No free LLM backend found.\n"
                 "  • Install Ollama (free): https://ollama.com  then: ollama pull llama3.2\n"
-                "  • Or set GROQ_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY (free tiers)\n"
+                "  • Or set GROQ_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY (free tiers), or XAI_API_KEY for Grok\n"
                 "  • Or run offline: python forge_offline_bench.py --mutations"
             )
 
@@ -648,17 +641,7 @@ def main() -> None:
     print(f"backend={args.backend}  ollama_available={ollama_available()}")
 
     if not args.dry_run and args.backend == "auto":
-        has_key = any(
-            os.environ.get(k)
-            for k in (
-                "GROQ_API_KEY",
-                "GEMINI_API_KEY",
-                "GOOGLE_API_KEY",
-                "OPENROUTER_API_KEY",
-                "OPENAI_API_KEY",
-                "DEEPSEEK_API_KEY",
-            )
-        )
+        has_key = has_api_key()
         if not ollama_available() and not has_key:
             print("No free backend found (no Ollama, no API keys).")
             print("Falling back to golden dry-run. For real LLM scores:")

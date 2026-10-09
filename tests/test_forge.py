@@ -486,6 +486,29 @@ class TestChatCompletion(unittest.TestCase):
         self.assertEqual(seen["body"]["max_tokens"], 5)
 
 
+class TestProviders(unittest.TestCase):
+    def test_each_key_gets_its_own_endpoint_and_model(self):
+        from unittest import mock
+
+        from forge_runtime import OpenAILLMClient
+
+        cases = {
+            "XAI_API_KEY": ("https://api.x.ai/v1", "grok-latest"),
+            "GROK_API_KEY": ("https://api.x.ai/v1", "grok-latest"),
+            "GROQ_API_KEY": ("https://api.groq.com/openai/v1", "llama-3.1-8b-instant"),
+            "DEEPSEEK_API_KEY": ("https://api.deepseek.com", "deepseek-chat"),
+        }
+        for env, (base, model) in cases.items():
+            with self.subTest(env=env), mock.patch.dict(os.environ, {env: "k"}, clear=True):
+                client = OpenAILLMClient()
+                self.assertEqual((client.base_url, client.model), (base, model))
+        with mock.patch.dict(os.environ, {"XAI_API_KEY": "k", "FORGE_LLM_MODEL": "grok-4.3"}, clear=True):
+            self.assertEqual(OpenAILLMClient().model, "grok-4.3")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ForgeRuntimeError, "XAI_API_KEY"):
+                OpenAILLMClient()
+
+
 class TestCLI(unittest.TestCase):
     def test_init_templates_check_clean(self):
         import contextlib

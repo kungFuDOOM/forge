@@ -430,7 +430,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         )
     except Exception as e:
         print(_friendly_error(e), file=sys.stderr)
-        print("  tip: ./start_ollama.sh   or set GROQ_API_KEY / GEMINI_API_KEY", file=sys.stderr)
+        print("  tip: ./start_ollama.sh   or set GROQ_API_KEY / GEMINI_API_KEY / XAI_API_KEY (Grok)", file=sys.stderr)
         return 1
 
     if not args.hide_source or not out.get("parse_ok"):

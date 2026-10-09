@@ -134,7 +134,7 @@ def main() -> int:
         )
     except Exception as e:
         print(f"Generation failed: {e}", file=sys.stderr)
-        print("Tip: start Ollama (`./start_ollama.sh`) or set GROQ_API_KEY / GEMINI_API_KEY", file=sys.stderr)
+        print("Tip: start Ollama (`./start_ollama.sh`) or set GROQ_API_KEY / GEMINI_API_KEY / XAI_API_KEY (Grok)", file=sys.stderr)
         return 1
 
     if args.show_source or not out.get("runtime_ok"):

@@ -84,15 +84,15 @@ class OpenAILLMClient(LLMClient):
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: str = "gpt-4o-mini",
+        model: Optional[str] = None,  # None = the provider's default for the key found
     ):
         self.api_key, self.base_url, self.model = _resolve_openai_compat(
             api_key=api_key, base_url=base_url, model=model
         )
         if not self.api_key:
             raise ForgeRuntimeError(
-                "No API key. Set GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, "
-                "or DEEPSEEK_API_KEY — or use OllamaLLMClient (free/local)."
+                f"No API key. Set one of {', '.join(API_KEY_ENVS)} "
+                "— or use OllamaLLMClient (free/local)."
             )
 
     def complete(self, prompt: str, context: Any = None) -> str:
@@ -134,8 +134,7 @@ def chat_completion(
         api_key, base_url, model = _resolve_openai_compat(base_url=base_url, model=model)
     if not api_key:
         raise ForgeRuntimeError(
-            "No API key. Set GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, "
-            "OPENAI_API_KEY, or DEEPSEEK_API_KEY — or use Ollama (free/local)."
+            f"No API key. Set one of {', '.join(API_KEY_ENVS)} — or use Ollama (free/local)."
         )
     url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
     body: dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature}
@@ -224,6 +223,17 @@ class OllamaLLMClient(LLMClient):
         return msg.get("content") or data.get("response") or ""
 
 
+# Env vars that select an OpenAI-compatible provider, in priority order
+API_KEY_ENVS = (
+    "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
+    "XAI_API_KEY", "GROK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+)
+
+
+def has_api_key() -> bool:
+    return any(os.environ.get(k) for k in API_KEY_ENVS)
+
+
 def _resolve_openai_compat(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -255,6 +265,14 @@ def _resolve_openai_compat(
             os.environ["OPENROUTER_API_KEY"],
             base_url or "https://openrouter.ai/api/v1",
             model or "meta-llama/llama-3.2-3b-instruct:free",
+        )
+    xai_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
+    if xai_key:
+        # xAI Grok; grok-latest always points at the newest Grok model
+        return (
+            xai_key,
+            base_url or "https://api.x.ai/v1",
+            model or "grok-latest",
         )
     if os.environ.get("OPENAI_API_KEY"):
         return (
