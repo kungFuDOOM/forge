@@ -315,6 +315,7 @@
       tab-size: 2; white-space: pre; overflow: auto;
     }
     .out-wrap { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .status { scroll-margin-top: 84px; }
     .status { font-size: 0.85rem; color: var(--muted); min-height: 1.4em; display: flex; gap: 8px; align-items: center; }
     .status.ok { color: var(--mint); }
     .status.err { color: #fca5a5; }
@@ -329,7 +330,8 @@
     @media (max-width: 640px) {
       /* 16px stops iOS Safari from zooming the page when a field is focused */
       #editor, .play-bar select { font-size: 16px; }
-      #editor { min-height: 340px; }
+      /* wrap long lines instead of hiding them off the right edge */
+      #editor { min-height: 340px; white-space: pre-wrap; overflow-wrap: anywhere; }
       #output { min-height: 180px; }
     }
 
@@ -480,7 +482,7 @@
       <div class="out-wrap">
         <div class="status" id="status" role="status" aria-live="polite">Press Run. The first run downloads the Python runtime (about 12 MB).</div>
         <pre class="mono" id="output" aria-label="Output"></pre>
-        <p class="play-note">REASON steps use a mock LLM here, and the network tools (<code class="inline">http_get</code>, <code class="inline">http_post</code>) need the CLI or MCP server.</p>
+        <p class="play-note">REASON steps get a placeholder "mock AI" reply here (connect a real model in the CLI or MCP server), and the network tools (<code class="inline">http_get</code>, <code class="inline">http_post</code>) need the CLI or MCP server.</p>
       </div>
     </div>
   </section>
@@ -754,6 +756,11 @@ from forge_core import ForgeError, ast_to_json, check_program, compile_auto, val
 from forge_repair import try_compile_repaired
 from forge_runtime import Evaluator, MockLLMClient, ToolRegistry
 
+class _PlaygroundLLM(MockLLMClient):
+    """Short, clearly-labelled stand-in for a real LLM."""
+    def complete(self, prompt, context=None):
+        return f"(mock AI reply to: {prompt})"
+
 def _offline(name):
     def tool(inputs):
         raise ForgeError(f"{name} needs network access, which the browser playground doesn't have. "
@@ -788,7 +795,7 @@ def forge_play(action, source):
             return json.dumps({"ok": True, "output": f"OK: agent={program.agent.name!r}, {len(program.steps)} top-level steps, no problems found.", "note": note})
         if action == "ast":
             return json.dumps({"ok": True, "output": ast_to_json(program), "note": note})
-        ev = Evaluator(tools=tools, llm=MockLLMClient(), max_steps=10000, max_seconds=10)
+        ev = Evaluator(tools=tools, llm=_PlaygroundLLM(), max_steps=10000, max_seconds=10)
         result = ev.run(program)
         return json.dumps({"ok": True, "output": json.dumps(result, indent=2, default=str), "note": note, "steps": ev.steps_run})
     except Exception as e:
@@ -871,6 +878,14 @@ def forge_play(action, source):
           : (action === "check" ? "Check found problems, and each one names what's available" : "Error: the message says what to fix");
         if (res.note) msg += ` (${res.note})`;
         setStatus(msg, res.ok ? "ok" : "err");
+        // Phones: the output sits below the editor, so scroll the result into view
+        if (window.matchMedia("(max-width: 900px)").matches) {
+          const r = status.getBoundingClientRect();
+          if (r.top < 70 || r.bottom > window.innerHeight * 0.5) {
+            const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            status.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+          }
+        }
       } catch (e) {
         console.error(e);
         setStatus("Couldn't start the playground: " + ((e && e.message) || String(e)) + ". Try reloading, or run Forge locally.", "err");
