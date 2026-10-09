@@ -1,16 +1,19 @@
-# Agent benchmark: tool by tool vs one Forge call
+# Agent benchmark: tool by tool vs Python code mode vs Forge
 
 Forge's core claim: an agent spends fewer tokens when it writes a whole job as one
 program instead of making one tool call per step, because every round trip re-sends
-the whole conversation. `forge agent-bench` measures that directly.
+the whole conversation. `forge agent-bench` measures that directly, and also pits
+Forge against the strongest alternative: letting the model write **Python** that
+calls the tools ("code mode").
 
 ## What it runs
 
-Five tasks, each solved twice by the **same model**:
+Five tasks, each solved three times by the **same model**:
 
 | Mode | The model gets | How it works |
 |------|----------------|--------------|
 | `tools` | every Forge tool as an ordinary function (`sales_data`, `sum`, `write_file`, …) | the usual agent loop: call a tool, read the result, decide the next call |
+| `python` | one tool, `run_python(code)`; the script calls the same tools via `tools.call(...)` | "code mode", the approach of Anthropic's programmatic tool calling, Cloudflare Code Mode and smolagents' CodeAgent. Runs in a child process with no imports, a small builtin set and a 30 s timeout |
 | `forge` | one tool, `forge_run(source)`, with the language spec in its description | writes a Forge program; ideally one call does the whole job |
 
 | Task | What makes it interesting |
@@ -42,19 +45,34 @@ export GROQ_API_KEY=...        # or XAI_API_KEY=... for Grok
 
 # options
 ./forge agent-bench --tasks four-regions research --runs 3
+./forge agent-bench --modes python forge          # just the code-mode match-up
 ./forge agent-bench --price-in 0.20 --price-out 0.60   # $ per 1M tokens for the cost column
 ```
 
 Results print as a table and are saved to `agent_bench_results.json`.
 
+## Fixed cost per turn
+
+Every turn re-sends the tool definitions. Measured with `len(json)/4`:
+
+| Mode | Tool definitions per turn |
+|------|---------------------------|
+| `tools` | ≈ 1,130 tokens (18 function schemas) |
+| `python` | ≈ 440 tokens (one tool + a tool list; models already know Python) |
+| `forge` | ≈ 900 tokens (one tool + the Forge spec + the tool list) |
+
+So **Forge starts each turn about 460 tokens behind Python code mode**: models know
+Python, while Forge has to teach its syntax. To beat code mode, Forge has to win on
+something else, such as shorter programs, fewer failed attempts, or one turn where
+Python needs two. The benchmark measures whether it does.
+
 ## Reading the results
 
-- **`token savings on tasks both modes solved`** is the fair number: it compares only
-  tasks each mode got right.
+- The summary prints **savings for every pair** (`forge vs tools`, `forge vs python`,
+  `python vs tools`) on tasks both contestants solved. That is the fair number.
 - `turns` and `calls` show where the savings come from: fewer round trips means the
   conversation is re-sent fewer times.
-- Forge's tool description (the spec) is larger than a single tool schema, so on very
-  short jobs Forge can cost *more*. The win should grow with the number of steps;
+- Both one-program modes should beat `tools` more as the number of steps grows;
   `four-regions` is the task to watch.
 - Small models may fail either mode. Use `--runs 3` or more for a steadier picture.
 

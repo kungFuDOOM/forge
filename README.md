@@ -120,6 +120,33 @@ Full reference (about 800 tokens including every tool, written for an AI's conte
 
 ---
 
+## How Forge compares
+
+The idea that an agent should write one program instead of making a tool call per step
+isn't unique to Forge. Anthropic ([programmatic tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling),
+code execution with MCP), Cloudflare (Code Mode) and Hugging Face
+([smolagents](https://github.com/huggingface/smolagents) CodeAgent) do it by letting the model
+write **Python or TypeScript** in a sandbox. Forge does it with a small language instead.
+
+| | One tool call per step | Python / TypeScript code mode | Forge |
+|---|---|---|---|
+| Round trips for a 6-step job | 6 | 1 | 1 |
+| Model already knows the language | — | **Yes** | No: a ~900-token spec rides along each turn |
+| What a program can do | — | **Anything** the sandbox allows | Only call the listed tools (loops, branches, parallel, retries) |
+| Needs a sandbox to run safely | No | Yes: container, V8 isolate or restricted interpreter | **No**: safe by construction |
+| Checked before anything runs | — | Syntax | **Syntax, unknown tools, undefined variables** |
+| Where it works | Everywhere | Varies: Anthropic's via the Claude API, Cloudflare's on Workers, smolagents as a Python library | **Any model, any MCP client**, zero dependencies |
+
+**Pick code mode** if you already run a sandbox and want full flexibility. **Pick Forge** if you
+can't or don't want to execute model-written code, need one setup that works across models
+and MCP clients, or run small local models that benefit from Forge's repair step.
+
+`./forge agent-bench` pits all three against each other on the same tasks and model. Forge's
+spec makes each turn about 460 tokens more expensive than Python code mode, so Forge has to earn
+its keep elsewhere; [AGENT_BENCH.md](AGENT_BENCH.md) explains what to look for.
+
+---
+
 ## Your own tools
 
 A tool is a Python function that takes one dict of inputs. The first line of its docstring
@@ -189,7 +216,7 @@ Any provider: pick a specific model with `export FORGE_LLM_MODEL=…`.
 ./forge tokens FILE      # rough token vs Python/LangChain
 ./forge doctor           # setup check
 ./forge repl             # interactive
-./forge agent-bench      # agent tokens: tool-by-tool vs one forge_run call (see AGENT_BENCH.md)
+./forge agent-bench      # agent tokens: tool-by-tool vs Python code mode vs Forge (see AGENT_BENCH.md)
 ./forge credit-test      # Forge vs Python credits (see CREDIT_TEST.md)
 ./forge bench            # LLM generation benchmark (see BENCH.md)
 ```

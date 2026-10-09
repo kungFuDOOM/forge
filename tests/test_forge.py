@@ -618,6 +618,13 @@ STEP all TOOL sum INPUT { list: $totals } OUTPUT total
 RETURN $total'''
 
 
+FOUR_REGIONS_PYTHON = '''total = 0
+for r in ["north", "south", "east", "west"]:
+    deals = tools.call("sales_data", {"region": r, "period": "Q1"})
+    total += sum(d["amount"] for d in deals if d["amount"] > 10000)
+print(total)'''
+
+
 def scripted_agent(messages, tools):
     """Plays a competent agent for the four-regions task, in either mode."""
     import json
@@ -633,6 +640,10 @@ def scripted_agent(messages, tools):
         if not done:
             return call("forge_run", {"source": FOUR_REGIONS_PROGRAM}), {}
         return {"role": "assistant", "content": f"The total is {done[-1]['content']}."}, {}
+    if names == {"run_python"}:
+        if not done:
+            return call("run_python", {"code": FOUR_REGIONS_PYTHON}), {}
+        return {"role": "assistant", "content": f"The total is {done[-1]['content'].strip()}."}, {}
     regions = ["north", "south", "east", "west"]
     if len(done) < 4:
         return call("sales_data", {"region": regions[len(done)], "period": "Q1"}), {}
@@ -645,10 +656,13 @@ class TestAgentBench(unittest.TestCase):
         from forge_agent_bench import run_agent_bench
 
         runs, summary = run_agent_bench(scripted_agent, ["four-regions"])
-        tools_run, forge_run_ = runs
-        self.assertTrue(tools_run.ok and forge_run_.ok, (tools_run.error, forge_run_.error))
+        tools_run, python_run, forge_run_ = runs
+        self.assertEqual([r.mode for r in runs], ["tools", "python", "forge"])
+        self.assertTrue(all(r.ok for r in runs), [r.error for r in runs])
         self.assertEqual((tools_run.turns, tools_run.tool_calls), (5, 4))
+        self.assertEqual((python_run.turns, python_run.tool_calls), (2, 1))
         self.assertEqual((forge_run_.turns, forge_run_.tool_calls), (2, 1))
+        self.assertEqual(set(summary["pairwise"]), {"python_vs_tools", "forge_vs_tools", "forge_vs_python"})
         self.assertTrue(summary["estimated_tokens"])  # scripted model reports no usage
         self.assertEqual(summary["tasks_both_solved"], ["four-regions"])
         self.assertGreater(summary["savings_on_tasks_both_solved_pct"], 0)
@@ -663,6 +677,15 @@ class TestAgentBench(unittest.TestCase):
         self.assertFalse(any(r.ok for r in runs))
         self.assertEqual(runs[0].total_tokens, 55)
         self.assertFalse(summary["estimated_tokens"])
+
+    def test_python_contestant_is_sandboxed(self):
+        from forge_agent_bench import run_python_sandboxed
+
+        self.assertIn("imports are not allowed", run_python_sandboxed("import os"))
+        self.assertIn("NameError", run_python_sandboxed("open('/etc/hostname')"))
+        self.assertIn("not allowed", run_python_sandboxed("g = (x for x in [1])\nprint(g.gi_frame.f_globals)"))
+        self.assertIn("timed out", run_python_sandboxed("while True:\n    pass", timeout=2))
+        self.assertEqual(run_python_sandboxed("print(tools.call('calc', {'op': 'mul', 'x': 6, 'y': 7}))").strip(), "42")
 
     def test_tool_schemas(self):
         from forge_agent_bench import tool_schema
@@ -712,9 +735,11 @@ class TestAgentBench(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
         self.assertTrue(all(r.ok for r in runs), [r.error for r in runs])
-        self.assertEqual([r.total_tokens for r in runs], [550, 220])  # 5 turns vs 2 turns
+        self.assertEqual([r.total_tokens for r in runs], [550, 220, 220])  # 5 turns vs 2 vs 2
         self.assertEqual(summary["token_savings_pct"], 60.0)
+        self.assertEqual(summary["pairwise"]["forge_vs_python"]["savings_pct"], 0.0)
         self.assertEqual(bodies[0]["model"], "test-model")
+        self.assertEqual({b["tools"][0]["function"]["name"] for b in bodies[-4:]}, {"run_python", "forge_run"})
         self.assertEqual(bodies[0]["tool_choice"], "auto")
         # tool results go back to the model as role=tool messages with the call id
         self.assertEqual(bodies[1]["messages"][-1]["role"], "tool")

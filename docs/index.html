@@ -354,6 +354,27 @@
     .foot-links a:hover { color: var(--text); }
     /* Grid columns may shrink below their content; long code scrolls inside its box */
     .compare > *, .split > *, .play > *, .grid3 > *, .hero-inner > *, .stack > * { min-width: 0; }
+    /* Comparison table */
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--card); }
+    table.compare-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 0.9rem; }
+    .compare-table th, .compare-table td { padding: 12px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .compare-table thead th { color: var(--text); font-weight: 700; background: rgba(255,255,255,0.03); }
+    .compare-table tbody th { color: var(--muted); font-weight: 500; width: 26%; }
+    .compare-table td { color: var(--muted); }
+    .compare-table td.win { color: var(--mint); }
+    .compare-table tr:last-child th, .compare-table tr:last-child td { border-bottom: none; }
+    @media (max-width: 640px) {
+      /* Phones: each row becomes a small card listing all three options */
+      .table-wrap { overflow: visible; border: none; background: none; }
+      table.compare-table, .compare-table tbody, .compare-table tr, .compare-table th, .compare-table td { display: block; min-width: 0; width: auto; }
+      .compare-table thead { display: none; }
+      .compare-table tr { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+      .compare-table tbody th { color: var(--text); font-weight: 700; padding: 0 0 6px; border: none; width: auto; }
+      .compare-table td { padding: 3px 0; border: none; display: grid; grid-template-columns: 9.5em 1fr; gap: 8px; }
+      .compare-table td::before { content: attr(data-label); color: var(--muted); opacity: 0.75; }
+    }
+    .compare-note { color: var(--muted); font-size: 0.92rem; margin: 18px 0 0; max-width: 52rem; }
+    .compare-note strong { color: var(--text); }
     .sr-only {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -371,6 +392,7 @@
         <a class="opt" href="#why">Why</a>
         <a href="#playground">Playground</a>
         <a class="opt" href="#language">Language</a>
+        <a class="opt" href="#compare">Compare</a>
         <a class="opt" href="#mcp">For agents</a>
         <a class="opt" href="#start">Start</a>
         <a class="nav-cta" href="https://github.com/kungFuDOOM/forge">GitHub</a>
@@ -460,6 +482,36 @@
         <p>Step and time budgets, file access limited to the working folder, cloud-metadata addresses blocked, and a cap on what each REASON sends to the LLM.</p>
       </div>
     </div>
+  </section>
+
+  <section id="compare">
+    <h2 class="section-title">How Forge compares</h2>
+    <p class="section-sub">
+      Writing one program instead of many tool calls isn't unique to Forge. Anthropic, Cloudflare
+      and Hugging Face let models write Python or TypeScript in a sandbox ("code mode").
+      Forge uses a small language instead. Each has a real advantage.
+    </p>
+    <div class="table-wrap" role="region" aria-label="Comparison table" tabindex="0">
+      <table class="compare-table">
+        <thead>
+          <tr><th scope="col"></th><th scope="col">One tool call per step</th><th scope="col">Python / TypeScript code mode</th><th scope="col">Forge</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Round trips for a 6-step job</th><td data-label="One call per step">6</td><td class="win" data-label="Code mode">1</td><td class="win" data-label="Forge">1</td></tr>
+          <tr><th scope="row">Model already knows the language</th><td data-label="One call per step">—</td><td class="win" data-label="Code mode">Yes</td><td data-label="Forge">No: a ~900-token spec rides along</td></tr>
+          <tr><th scope="row">What a program can do</th><td data-label="One call per step">—</td><td class="win" data-label="Code mode">Anything the sandbox allows</td><td data-label="Forge">Only call the listed tools</td></tr>
+          <tr><th scope="row">Needs a sandbox to run safely</th><td data-label="One call per step">No</td><td data-label="Code mode">Yes: container, isolate or restricted interpreter</td><td class="win" data-label="Forge">No: safe by construction</td></tr>
+          <tr><th scope="row">Checked before anything runs</th><td data-label="One call per step">—</td><td data-label="Code mode">Syntax</td><td class="win" data-label="Forge">Syntax, unknown tools, undefined variables</td></tr>
+          <tr><th scope="row">Where it works</th><td data-label="One call per step">Everywhere</td><td data-label="Code mode">Varies by vendor and platform</td><td class="win" data-label="Forge">Any model, any MCP client, zero dependencies</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="compare-note">
+      <strong>Pick code mode</strong> if you already run a sandbox and want full flexibility.
+      <strong>Pick Forge</strong> if you'd rather not execute model-written code, want one setup across
+      models and MCP clients, or run small local models. <code class="inline">forge agent-bench</code>
+      measures all three on the same tasks and model.
+    </p>
   </section>
 
   <section id="playground">

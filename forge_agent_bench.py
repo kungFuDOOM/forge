@@ -10,6 +10,9 @@ same model, same tools:
 
   tools mode   the model gets every Forge tool as an ordinary function and
                works step by step (the usual agent loop)
+  python mode  "code mode": one tool, run_python(code), whose script calls the
+               same tools (the approach of Anthropic's programmatic tool
+               calling, Cloudflare Code Mode and smolagents' CodeAgent)
   forge mode   the model gets one tool, forge_run(source), and writes a program
 
 Every turn's prompt + completion tokens are summed from the provider's usage
@@ -27,6 +30,8 @@ import argparse
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -51,6 +56,12 @@ TOOL_RESULT_CHARS = 4000
 SYSTEM_PROMPT = (
     "You are a careful agent. Use the provided tools to get facts; never guess numbers. "
     "When you have the answer, reply with one short sentence that includes it."
+)
+MODES = ("tools", "python", "forge")
+PYTHON_TIMEOUT_S = 30
+PYTHON_HINT = (
+    "Prefer doing the whole job in a single run_python call: loops, filters, math "
+    "and file writes all fit in one script."
 )
 FORGE_HINT = (
     "Prefer doing the whole job in a single forge_run call: loops, filters, math "
@@ -154,6 +165,25 @@ def tool_schema(name: str, doc: str) -> dict:
 def tool_defs(mode: str, tools: ToolRegistry) -> list[dict]:
     if mode == "tools":
         return [tool_schema(n, d) for n, d in tools.docs().items() if n not in EXCLUDED_TOOLS]
+    if mode == "python":
+        listing = "\n".join(f"  {n}: {d}" for n, d in tools.docs().items() if n not in EXCLUDED_TOOLS)
+        return [{
+            "type": "function",
+            "function": {
+                "name": "run_python",
+                "description": (
+                    "Run a Python script in a sandbox and get back what it prints. Call tools with "
+                    "tools.call(name, inputs_dict), e.g. tools.call('sales_data', {'region': 'north', "
+                    "'period': 'Q1'}). No imports; json and math are preloaded; basic builtins only. "
+                    "print() the result you need.\n\nTools:\n" + listing
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string", "description": "Python source"}},
+                    "required": ["code"],
+                },
+            },
+        }]
     spec = language_spec(tools)
     return [{
         "type": "function",
@@ -172,8 +202,71 @@ def tool_defs(mode: str, tools: ToolRegistry) -> list[dict]:
     }]
 
 
+def run_python_sandboxed(code: str, timeout: float = PYTHON_TIMEOUT_S) -> str:
+    """Run model-written Python in a child process (killable on timeout) that
+    exposes only the benchmark tools, no imports and a small builtin set."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--sandbox-child"],
+            input=json.dumps({"code": code}), capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"Error: script timed out after {timeout:g}s"
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])["output"]
+    except (IndexError, ValueError, KeyError):
+        return f"Error: sandbox failed: {(proc.stderr or proc.stdout)[-500:]}"
+
+
+def _sandbox_child() -> None:
+    """Entry point of the run_python child process (reads {"code"} on stdin)."""
+    import ast
+    import io
+    import math
+
+    from forge_credit_test import _FRAME_ATTRS, _SAFE_BUILTINS
+
+    code = json.loads(sys.stdin.read())["code"]
+    out = io.StringIO()
+
+    def respond(text: str) -> None:
+        sys.__stdout__.write(json.dumps({"output": text}) + "\n")
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return respond(f"Error: SyntaxError: {e}")
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            return respond("Error: imports are not allowed (json and math are preloaded)")
+        if isinstance(n, ast.Attribute) and (n.attr.startswith("_") or n.attr in _FRAME_ATTRS):
+            return respond(f"Error: attribute {n.attr!r} is not allowed")
+
+    tools = _bench_tools()
+
+    class Tools:
+        def call(self, name: str, inputs: Optional[dict] = None) -> Any:
+            return tools.call(name, dict(inputs or {}))
+
+    builtins = {**_SAFE_BUILTINS, "print": lambda *a, **k: print(*a, **{**k, "file": out})}
+    ns: dict[str, Any] = {"__builtins__": builtins, "tools": Tools(), "json": json, "math": math}
+    try:
+        exec(compile(tree, "<run_python>", "exec"), ns, ns)
+        text = out.getvalue() or "(no output: print() the result you need)"
+    except Exception as e:
+        text = out.getvalue() + f"Error: {type(e).__name__}: {e}"
+    respond(text)
+
+
 def execute_tool(mode: str, name: str, args: dict, tools: ToolRegistry) -> str:
     try:
+        if mode == "python":
+            if name != "run_python":
+                return f"Unknown tool {name!r}; the only tool is run_python"
+            text = run_python_sandboxed(str(args.get("code", "")))
+            if len(text) > TOOL_RESULT_CHARS:
+                text = text[:TOOL_RESULT_CHARS] + f"…[truncated {len(text) - TOOL_RESULT_CHARS} chars]"
+            return text
         if mode == "forge":
             if name != "forge_run":
                 return f"Unknown tool {name!r}; the only tool is forge_run"
@@ -225,7 +318,7 @@ def answer_ok(task: dict, answer: str) -> bool:
 def run_agent(task: dict, mode: str, call: ModelCall, price_in: float, price_out: float) -> AgentRun:
     tools = _bench_tools()
     defs = tool_defs(mode, tools)
-    system = SYSTEM_PROMPT + (" " + FORGE_HINT if mode == "forge" else "")
+    system = SYSTEM_PROMPT + {"forge": " " + FORGE_HINT, "python": " " + PYTHON_HINT}.get(mode, "")
     messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": task["prompt"]}]
     prompt_tok = completion_tok = tool_calls = turns = 0
     estimated = False
@@ -276,9 +369,20 @@ def run_agent(task: dict, mode: str, call: ModelCall, price_in: float, price_out
                     answer[:300], error)
 
 
+def _savings(runs: list[AgentRun], base: str, mode: str) -> tuple[Optional[float], list[str]]:
+    """Token savings of `mode` vs `base` on tasks both solved (the fair view)."""
+    ok_base = [r for r in runs if r.mode == base and r.ok]
+    ok_mode = [r for r in runs if r.mode == mode and r.ok]
+    shared = {r.task_id for r in ok_base} & {r.task_id for r in ok_mode}
+    bt = sum(r.total_tokens for r in ok_base if r.task_id in shared)
+    mt = sum(r.total_tokens for r in ok_mode if r.task_id in shared)
+    return (round(100 * (1 - mt / bt), 1) if bt else None), sorted(shared)
+
+
 def summarize(runs: list[AgentRun]) -> dict:
     out: dict[str, Any] = {}
-    for mode in ("tools", "forge"):
+    modes = [m for m in MODES if any(r.mode == m for r in runs)]
+    for mode in modes:
         rs = [r for r in runs if r.mode == mode]
         out[mode] = {
             "runs": len(rs),
@@ -287,16 +391,16 @@ def summarize(runs: list[AgentRun]) -> dict:
             "usd": round(sum(r.usd for r in rs), 6),
             "turns": sum(r.turns for r in rs),
         }
-    t, f = out["tools"]["total_tokens"], out["forge"]["total_tokens"]
-    out["token_savings_pct"] = round(100 * (1 - f / t), 1) if t else None
-    # Fair view: only tasks both modes got right
-    ok_tools = [r for r in runs if r.mode == "tools" and r.ok]
-    ok_forge = [r for r in runs if r.mode == "forge" and r.ok]
-    shared = {r.task_id for r in ok_tools} & {r.task_id for r in ok_forge}
-    tt = sum(r.total_tokens for r in ok_tools if r.task_id in shared)
-    ft = sum(r.total_tokens for r in ok_forge if r.task_id in shared)
-    out["savings_on_tasks_both_solved_pct"] = round(100 * (1 - ft / tt), 1) if tt else None
-    out["tasks_both_solved"] = sorted(shared)
+    if "tools" in out and "forge" in out:
+        t, f = out["tools"]["total_tokens"], out["forge"]["total_tokens"]
+        out["token_savings_pct"] = round(100 * (1 - f / t), 1) if t else None
+        out["savings_on_tasks_both_solved_pct"], out["tasks_both_solved"] = _savings(runs, "tools", "forge")
+    # Every pair, e.g. "forge_vs_python": savings of forge relative to python
+    out["pairwise"] = {}
+    for i, base in enumerate(modes):
+        for mode in modes[i + 1:]:
+            pct, shared = _savings(runs, base, mode)
+            out["pairwise"][f"{mode}_vs_{base}"] = {"savings_pct": pct, "tasks": shared}
     out["estimated_tokens"] = any(r.estimated for r in runs)
     return out
 
@@ -308,6 +412,7 @@ def run_agent_bench(
     price_in: float = DEFAULT_PRICE_IN,
     price_out: float = DEFAULT_PRICE_OUT,
     on_result: Optional[Callable[[AgentRun], None]] = None,
+    modes: tuple = MODES,
 ) -> tuple[list[AgentRun], dict]:
     tasks = [t for t in AGENT_TASKS if not task_ids or t["id"] in task_ids]
     if task_ids and len(tasks) != len(set(task_ids)):
@@ -316,7 +421,7 @@ def run_agent_bench(
     results: list[AgentRun] = []
     for task in tasks:
         for _ in range(runs):
-            for mode in ("tools", "forge"):
+            for mode in modes:
                 r = run_agent(task, mode, call, price_in, price_out)
                 results.append(r)
                 if on_result:
@@ -351,11 +456,13 @@ def make_call(backend: str, model: Optional[str]) -> tuple[ModelCall, str]:
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="forge agent-bench",
-                                 description="Agent benchmark: tool-by-tool vs one forge_run call")
+                                 description="Agent benchmark: tool-by-tool vs Python code mode vs one forge_run call")
     ap.add_argument("--backend", default="auto", help="auto | ollama | openai")
     ap.add_argument("--model", default=None)
     ap.add_argument("--tasks", nargs="*", help=f"task ids (default all): {', '.join(t['id'] for t in AGENT_TASKS)}")
-    ap.add_argument("--runs", type=int, default=1, help="repeat each task (both modes) N times")
+    ap.add_argument("--runs", type=int, default=1, help="repeat each task (all modes) N times")
+    ap.add_argument("--modes", nargs="*", default=list(MODES), choices=list(MODES),
+                    help="which contestants to run (default: tools python forge)")
     ap.add_argument("--price-in", type=float, default=DEFAULT_PRICE_IN, help="$ per 1M input tokens")
     ap.add_argument("--price-out", type=float, default=DEFAULT_PRICE_OUT, help="$ per 1M output tokens")
     ap.add_argument("--out", default="agent_bench_results.json")
@@ -376,18 +483,21 @@ def main(argv: Optional[list[str]] = None) -> int:
               f"{r.total_tokens:8} {r.usd:10.6f}  {note[:60]}")
 
     try:
-        results, summary = run_agent_bench(call, args.tasks, args.runs, args.price_in, args.price_out, show)
+        results, summary = run_agent_bench(call, args.tasks, args.runs, args.price_in, args.price_out, show,
+                                           tuple(m for m in MODES if m in args.modes))
     except ValueError as e:
         print(e)
         return 1
 
     print("\nSUMMARY")
-    for mode in ("tools", "forge"):
-        m = summary[mode]
-        print(f"  {mode:6} solved {m['success']}/{m['runs']}  tokens {m['total_tokens']}  ${m['usd']:.6f}  turns {m['turns']}")
-    print(f"  token savings with Forge (all runs):          {summary['token_savings_pct']}%")
-    print(f"  token savings on tasks both modes solved:     {summary['savings_on_tasks_both_solved_pct']}%"
-          f"  ({', '.join(summary['tasks_both_solved']) or 'none'})")
+    for mode in MODES:
+        if mode in summary:
+            m = summary[mode]
+            print(f"  {mode:6} solved {m['success']}/{m['runs']}  tokens {m['total_tokens']}  ${m['usd']:.6f}  turns {m['turns']}")
+    print("\n  token savings on tasks both contestants solved (positive = first one is cheaper):")
+    for pair, v in summary["pairwise"].items():
+        a, b = pair.split("_vs_")
+        print(f"    {a} vs {b}: {v['savings_pct']}%  ({', '.join(v['tasks']) or 'no shared solved tasks'})")
     if summary["estimated_tokens"]:
         print("  note: the provider returned no usage for some calls; those tokens are estimated")
     with open(args.out, "w", encoding="utf-8") as f:
@@ -397,4 +507,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--sandbox-child"]:
+        _sandbox_child()
+        raise SystemExit(0)
     raise SystemExit(main())
