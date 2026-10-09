@@ -1,4 +1,4 @@
-# Forge Vision — JavaScript for AI
+# Forge Vision: one call, not ten
 
 ## The point
 
@@ -43,7 +43,8 @@ Same nodes. Same semantics. LLMs can skip syntax entirely when that is more reli
 ## Locked identity
 
 - **Name:** Forge  
-- **Tagline:** JavaScript for AI  
+- **Tagline:** One call, not ten. *The agent language.*  
+  (Until v0.4 it was "JavaScript for AI". Forge isn't JavaScript, and the new line says what Forge does: a whole job in one call.)  
 - **Role split:** Human = vision; AI = implementation, syntax, tests, iteration  
 - **v0.4:** agent workflows with loops (`FOR EACH`/`YIELD`, `PARALLEL`), branches (`IF`/`ELSE`), error handling (`TRY`/`ON ERROR`, `RETRY`), reusable programs (`RUN`), field access, lists, pre-run checks, budgets, MCP server and Claude Code plugin, data/web tools  
 

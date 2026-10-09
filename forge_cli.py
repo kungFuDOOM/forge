@@ -24,8 +24,8 @@ ROOT = Path(__file__).resolve().parent
 
 
 BANNER = """
-Forge — JavaScript for AI
-Agent programs AIs (and humans) can write and run.
+Forge: one call, not ten
+The agent language. Write the whole job as one short program, run it in a single call.
 
 Try this now:
   ./forge quickstart
@@ -516,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="forge",
-        description="Forge — JavaScript for AI. Write agent programs. Run them.",
+        description="Forge: one call, not ten. The agent language: write the whole job as one program, run it in a single call.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

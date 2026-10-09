@@ -1,10 +1,11 @@
-# Forge — JavaScript for AI
+# Forge: one call, not ten
 
-An **AI-native agent language**. Write a short program. Run a whole multi-step job.
-Built for how AIs generate code — not 1990s human IDE habits.
+**The agent language.** An AI writes the whole multi-step job as one short program
+and runs it in a single call, instead of one tool call per step.
+Built for how AIs generate code, not 1990s human IDE habits.
 
-**Repo:** https://github.com/kungFuDOOM/forge  
-**Landing:** [docs/index.html](docs/index.html)
+**Try it in your browser:** https://kungfudoom.github.io/forge/  
+**Repo:** https://github.com/kungFuDOOM/forge
 
 No dependencies — Python 3.10+ standard library only.
 

@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Forge — JavaScript for AI</title>
+  <title>Forge: one call, not ten</title>
   <meta name="description" content="Forge is an AI-native agent language. Agents write a whole multi-step job as one short program and run it in a single call instead of one tool call per step. Try it in your browser." />
-  <meta property="og:title" content="Forge — JavaScript for AI" />
+  <meta property="og:title" content="Forge: one call, not ten" />
   <meta property="og:description" content="One call, not ten: the agent language that lets AIs run a whole job in a single tool call. Loops, checks, 19 tools, MCP server." />
   <meta property="og:image" content="https://kungfudoom.github.io/forge/hero-banner.jpg" />
   <meta property="og:url" content="https://kungfudoom.github.io/forge/" />
@@ -75,6 +75,7 @@
     /* HERO */
     .hero {
       position: relative;
+      overflow-x: clip; /* the spinning emblem glow must not widen the page on phones */
       min-height: min(88vh, 860px);
       display: flex; align-items: center;
       isolation: isolate;
@@ -382,8 +383,8 @@
     <div class="hero-banner" aria-hidden="true"></div>
     <div class="hero-inner">
       <div class="hero-copy">
-        <div class="kicker"><i></i> v0.4 · AI-native agent language</div>
-        <h1>JavaScript<br /><span class="grad">for AI</span></h1>
+        <div class="kicker"><i></i> v0.4 · The agent language</div>
+        <h1>One call,<br /><span class="grad">not ten.</span></h1>
         <p class="lead">
           Agents burn credits making one tool call per step. With Forge they write the whole
           job as one short program (loops, checks and all) and run it in a single call.
@@ -407,7 +408,7 @@
 
   <main>
   <section id="why">
-    <h2 class="section-title">One call, not ten</h2>
+    <h2 class="section-title">Where the credits go</h2>
     <p class="section-sub">
       Every tool round trip re-sends the agent's whole conversation. A Forge program does the
       same work inside one call, so the conversation is sent once.
@@ -614,7 +615,7 @@ cd forge
     <div class="foot-inner">
       <div class="foot-brand">
         <img src="emblem-192.png" alt="" width="28" height="28" />
-        <span>Forge: JavaScript for AI</span>
+        <span>Forge: one call, not ten</span>
       </div>
       <div class="foot-links">
         <a href="https://github.com/kungFuDOOM/forge">GitHub</a>

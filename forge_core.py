@@ -3,7 +3,7 @@ Forge v0.1 — Core language infrastructure
 ==========================================
 AST nodes, lexer, parser, compile pipeline, JSON AST dual path.
 
-Tagline: "JavaScript for AI"
+Tagline: "One call, not ten." (the agent language)
 Design: dual representation (text syntax ↔ JSON AST), agent-first primitives.
 """
 
