@@ -16,10 +16,13 @@ KEYWORDS = (
     "AGENT", "MEMORY", "STEP", "TOOL", "FILTER", "INPUT", "OUTPUT",
     "ON", "REASON", "VERIFY", "RETURN",
     "FOR", "EACH", "IN", "IF", "ELSE", "END", "YIELD", "AND", "OR", "CONTAINS",
+    "PARALLEL", "TRY", "ERROR", "RETRY", "RUN",
 )
 _KEYWORD_SET = set(KEYWORDS)
 # Words right after these are names, never keywords (STEP end, OUTPUT input)
 _NAME_AFTER = {"STEP", "OUTPUT", "TOOL", "EACH", "FOR"}
+# ...except these keywords, which legitimately follow OUTPUT name / FOR
+_KEYWORD_AFTER = {("FOR", "EACH")}
 _WORD_RE = re.compile(r"(?<![$.\w])[A-Za-z_]\w*")
 
 
@@ -33,7 +36,7 @@ def _uppercase_keywords(code: str) -> str:
         word = m.group(0)
         up = word.upper()
         is_key = re.match(r"\s*:", code[m.end():]) is not None
-        name_slot = prev in _NAME_AFTER and not (prev == "FOR" and up == "EACH")
+        name_slot = prev in _NAME_AFTER and (prev, up) not in _KEYWORD_AFTER
         if up in _KEYWORD_SET and word != up and not name_slot and not is_key:
             out.append(code[last : m.start()] + up)
             last = m.end()
@@ -145,7 +148,7 @@ def repair_forge(source: str) -> str:
             if not in_memory:
                 out.append(line)
                 continue
-            if re.match(r"^(STEP|REASON|VERIFY|RETURN|AGENT|FOR|IF)\b", stripped):
+            if re.match(r"^(STEP|REASON|VERIFY|RETURN|AGENT|FOR|IF|PARALLEL|TRY)\b", stripped):
                 in_memory = False
                 out.append(line)
                 continue
@@ -293,8 +296,8 @@ def repair_forge(source: str) -> str:
     s = s.replace("\r\n", "\n").replace("\r", "\n")
 
     # Ensure newline before major keywords for readability / lex stability
-    for kw in ("MEMORY", "STEP", "REASON", "VERIFY", "RETURN", "FOR", "IF", "ELSE", "END", "YIELD"):
-        s = _sub_code(rf"([^\n])\s*({kw}\b)", rf"\1\n\2", s)
+    for kw in ("MEMORY", "STEP", "REASON", "VERIFY", "RETURN", "IF", "ELSE", "END", "YIELD", "TRY"):
+        s = _sub_code(rf"([^\n])\s*\b({kw}\b)", rf"\1\n\2", s)
 
     return s.strip() + "\n"
 

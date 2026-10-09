@@ -655,6 +655,168 @@ return { big: $big, n: $input }"""
         self.assertEqual(run_program(prog, ToolRegistry(), MockLLMClient()), {"big": ["Acme", "Gamma Inc"], "n": 3})
 
 
+class TestParallel(unittest.TestCase):
+    SRC = '''
+AGENT "p"
+MEMORY { xs: [1, 2, 3, 4, 5, 6] }
+PARALLEL 6 FOR EACH x IN $xs OUTPUT out
+  STEP s TOOL slow INPUT { x: $x } OUTPUT v
+  YIELD $v
+END
+RETURN $out
+'''
+
+    def setUp(self):
+        import time as _time
+
+        self.tools = ToolRegistry()
+        self.tools.register("slow", lambda i: (_time.sleep(0.15), i["x"] * 10)[1])
+
+    def test_runs_concurrently_and_keeps_order(self):
+        import time as _time
+
+        t0 = _time.monotonic()
+        self.assertEqual(run_forge(self.SRC, tools=self.tools), [10, 20, 30, 40, 50, 60])
+        self.assertLess(_time.monotonic() - t0, 0.6)  # sequential would be ~0.9s
+
+    def test_default_width_implicit_collect_and_nesting(self):
+        out = run('''
+AGENT "p"
+MEMORY { rows: [1, 2], cols: [10, 20] }
+PARALLEL FOR EACH r IN $rows OUTPUT grid
+  PARALLEL 2 FOR EACH c IN $cols OUTPUT cells
+    STEP s TOOL arithmetic_add INPUT { x: $r, y: $c } OUTPUT cell
+  END
+  YIELD $cells
+END
+RETURN $grid
+''')
+        self.assertEqual(out, [[11, 21], [12, 22]])
+
+    def test_errors_propagate_and_budget_is_shared(self):
+        self.tools.register("boom", lambda i: 1 / 0)
+        with self.assertRaises(ZeroDivisionError):
+            run_forge(self.SRC.replace("TOOL slow", "TOOL boom"), tools=self.tools)
+        with self.assertRaisesRegex(ForgeRuntimeError, "Step budget exceeded"):
+            run_forge(self.SRC, tools=self.tools, max_steps=5)
+
+    def test_parallel_roundtrips_through_json(self):
+        prog = compile_forge(self.SRC)
+        self.assertEqual(prog.steps[0].action.parallel, 6)
+        self.assertEqual(_ast_to_dict(compile_forge_json(_ast_to_dict(prog))), _ast_to_dict(prog))
+
+    def test_bad_width_rejected(self):
+        with self.assertRaisesRegex(ForgeParseError, "PARALLEL needs a whole number"):
+            compile_forge(self.SRC.replace("PARALLEL 6", "PARALLEL 99"))
+
+
+class TestErrorHandling(unittest.TestCase):
+    def setUp(self):
+        self.tools = ToolRegistry()
+        self.calls = 0
+
+        def flaky(inputs):
+            self.calls += 1
+            if self.calls < 3:
+                raise RuntimeError("temporary outage")
+            return "ok"
+
+        self.tools.register("flaky", flaky)
+        self.tools.register("boom", lambda i: 1 / 0)
+
+    def test_retry_until_success(self):
+        out = run_forge('AGENT "r"\nSTEP s TOOL flaky INPUT {} OUTPUT v RETRY 2\nRETURN $v', tools=self.tools)
+        self.assertEqual((out, self.calls), ("ok", 3))
+
+    def test_retry_exhausted_raises(self):
+        with self.assertRaisesRegex(RuntimeError, "temporary outage"):
+            run_forge('AGENT "r"\nSTEP s TOOL flaky INPUT {} OUTPUT v RETRY 1\nRETURN $v', tools=self.tools)
+        self.assertEqual(self.calls, 2)
+
+    def test_try_on_error_sets_error(self):
+        out = run_forge('''
+AGENT "t"
+TRY
+  STEP s TOOL boom INPUT {} OUTPUT v
+ON ERROR
+  STEP f TOOL format INPUT { template: "fallback: {e}", e: $error } OUTPUT v
+END
+RETURN $v
+''', tools=self.tools)
+        self.assertEqual(out, "fallback: ZeroDivisionError: division by zero")
+
+    def test_try_catches_verify(self):
+        out = run('AGENT "t"\nSTEP s TOOL get_value INPUT {} OUTPUT v\nTRY\n  VERIFY $v > 100\n  STEP a TOOL get_value INPUT {} OUTPUT r\nON ERROR\n  STEP b TOOL calc INPUT { op: "mul", x: $v, y: 0 } OUTPUT r\nEND\nRETURN $r')
+        self.assertEqual(out, 0)
+
+    def test_try_scoping(self):
+        # $error and handler-only outputs are not visible after END
+        with self.assertRaisesRegex(ForgeCheckError, r"\$error used before"):
+            run('AGENT "t"\nTRY\n  STEP s TOOL get_value INPUT {} OUTPUT v\nON ERROR\n  STEP f TOOL get_value INPUT {} OUTPUT v\nEND\nRETURN $error')
+
+    def test_budget_is_not_caught(self):
+        src = 'AGENT "b"\nMEMORY { xs: [1,2,3,4,5,6,7,8,9,10] }\nTRY\n  FOR EACH x IN $xs\n    STEP s TOOL get_value INPUT {} OUTPUT v\n  END\nON ERROR\n  STEP h TOOL get_value INPUT {} OUTPUT v\nEND\nRETURN 1'
+        with self.assertRaisesRegex(ForgeRuntimeError, "Step budget exceeded"):
+            run_forge(src, max_steps=5)
+
+    def test_try_and_retry_roundtrip_json(self):
+        prog = compile_forge('AGENT "t"\nTRY\n  STEP s TOOL get_value INPUT {} OUTPUT v RETRY 3\nON ERROR\n  STEP f TOOL get_value INPUT {} OUTPUT v\nEND\nRETURN $v')
+        d = _ast_to_dict(prog)
+        self.assertEqual(d["steps"][0]["action"]["body"][0]["action"]["retries"], 3)
+        self.assertEqual(_ast_to_dict(compile_forge_json(d)), d)
+
+
+class TestRunProgram(unittest.TestCase):
+    def setUp(self):
+        self.cwd = os.getcwd()
+        self.tmp = tempfile.TemporaryDirectory()
+        os.chdir(self.tmp.name)
+        Path("lib").mkdir()
+        Path("lib/shout.forge").write_text(
+            'AGENT "shout"\nMEMORY { text: "hi", times: 1 }\n'
+            'STEP f TOOL format INPUT { template: "{t}!", t: $text } OUTPUT loud\n'
+            'STEP n RUN "count.forge" INPUT { text: $loud } OUTPUT size\n'
+            'RETURN { loud: $loud, size: $size, times: $times }\n'
+        )
+        Path("lib/count.forge").write_text(
+            'AGENT "count"\nMEMORY { text: "" }\nSTEP c TOOL count INPUT { list: $text } OUTPUT n\nRETURN $n\n'
+        )
+        Path("loop.forge").write_text('AGENT "loop"\nSTEP a RUN "loop.forge" OUTPUT r\nRETURN $r\n')
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        self.tmp.cleanup()
+
+    def test_run_overrides_memory_and_nests_relative_to_file(self):
+        out = run('AGENT "main"\nSTEP s RUN "lib/shout.forge" INPUT { text: "hey" } OUTPUT r\nRETURN $r')
+        self.assertEqual(out, {"loud": "hey!", "size": 4, "times": 1})
+
+    def test_unknown_memory_key(self):
+        with self.assertRaisesRegex(ForgeRuntimeError, r"has no MEMORY key txt \(its MEMORY keys: text, times\)"):
+            run('AGENT "m"\nSTEP s RUN "lib/shout.forge" INPUT { txt: "x" } OUTPUT r\nRETURN $r')
+
+    def test_path_sandbox_and_suffix(self):
+        for path, msg in (("../outside.forge", "must be inside"), ("lib/notes.txt", "needs a .forge"), ("nope.forge", "not found")):
+            with self.subTest(path=path), self.assertRaisesRegex(ForgeRuntimeError, msg):
+                run(f'AGENT "m"\nSTEP s RUN "{path}" OUTPUT r\nRETURN $r')
+
+    def test_recursion_depth_limited(self):
+        with self.assertRaisesRegex(ForgeRuntimeError, "nested deeper than"):
+            run('AGENT "m"\nSTEP s RUN "loop.forge" OUTPUT r\nRETURN $r')
+
+    def test_cli_resolves_run_next_to_the_program(self):
+        import contextlib
+        import io
+
+        from forge_cli import main
+
+        Path("lib/main.forge").write_text('AGENT "m"\nSTEP s RUN "count.forge" INPUT { text: "abc" } OUTPUT n\nRETURN $n\n')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(main(["run", "-q", "lib/main.forge"]), 0)
+        self.assertEqual(buf.getvalue().strip(), "3")
+
+
 class TestLimits(unittest.TestCase):
     SPIN = '''
 AGENT "spin"

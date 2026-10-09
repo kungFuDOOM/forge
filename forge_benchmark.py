@@ -80,6 +80,8 @@ Rules:
 - VERIFY may appear between STEPs to stop early.
 - Loop: FOR EACH x IN $list OUTPUT out ... YIELD { k: $x.f } ... END
 - Branch: IF $x > 1 AND $y CONTAINS "a" ... ELSE ... END
+- Concurrency: PARALLEL 8 FOR EACH ... END. Failures: ... OUTPUT x RETRY 2, or TRY ... ON ERROR ... END ($error).
+- Reuse: STEP s RUN "other.forge" INPUT { k: $v } OUTPUT x
 - Data tools: count, pick, sort, sum, join, format, calc, extract_text.
 - At least one STEP. RETURN is last.
 - Tools available: arithmetic_add, web_search, get_value, sales_data.

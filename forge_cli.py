@@ -70,6 +70,11 @@ def _limits(args: argparse.Namespace) -> dict:
     return {"max_steps": args.max_steps, "max_seconds": args.timeout}
 
 
+def _run_limits(args: argparse.Namespace, path: Path) -> dict:
+    # RUN "other.forge" resolves next to the program being run
+    return {**_limits(args), "base_dir": str(path.resolve().parent)}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from forge_repair import try_compile_repaired
     from forge_runtime import run_forge, run_program, make_llm_client
@@ -88,9 +93,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             program, used, notes = try_compile_repaired(source)
             if notes and not args.quiet:
                 print(f"[repair] {', '.join(notes)}", file=sys.stderr)
-            result = run_program(program, tools=tools, llm=llm, **_limits(args))
+            result = run_program(program, tools=tools, llm=llm, **_run_limits(args, path))
         else:
-            result = run_forge(source, tools=tools, llm=llm, **_limits(args))
+            result = run_forge(source, tools=tools, llm=llm, **_run_limits(args, path))
     except Exception as e:
         print(_friendly_error(e), file=sys.stderr)
         return 1

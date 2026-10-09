@@ -115,6 +115,7 @@ class ToolCall(ASTNode):
     tool_name: str
     inputs: dict  # str -> ASTNode
     output_var: str
+    retries: int = 0  # extra attempts on failure (RETRY n)
     node_type: str = field(default="tool_call")
 
 
@@ -129,7 +130,7 @@ class Filter(ASTNode):
 @dataclass
 class Step(ASTNode):
     step_name: str
-    action: Union[ToolCall, Filter, Reason, Verify, "ForEach", "If", "Yield"]
+    action: Union[ToolCall, Filter, Reason, Verify, "ForEach", "If", "Yield", "Try", "RunProgram"]
     node_type: str = field(default="step")
 
 
@@ -138,6 +139,7 @@ class Reason(ASTNode):
     prompt: str
     input_var: str
     output_var: str
+    retries: int = 0
     node_type: str = field(default="reason")
 
 
@@ -153,6 +155,7 @@ class ForEach(ASTNode):
     source: ASTNode  # list to iterate
     body: list  # Step
     output_var: Optional[str] = None  # list of YIELDed values (or last output)
+    parallel: int = 0  # >0: run up to this many iterations at once
     node_type: str = field(default="for_each")
 
 
@@ -162,6 +165,27 @@ class If(ASTNode):
     then: list  # Step
     else_: list  # Step
     node_type: str = field(default="if")
+
+
+@dataclass
+class Try(ASTNode):
+    body: list  # Step
+    handler: list  # Step; runs with $error set if body fails
+    error_var: str = "error"
+    node_type: str = field(default="try")
+
+
+@dataclass
+class RunProgram(ASTNode):
+    path: str  # another .forge file
+    inputs: dict  # str -> ASTNode; override that program's MEMORY
+    output_var: str
+    retries: int = 0
+    node_type: str = field(default="run_program")
+
+
+MAX_RETRIES = 10
+MAX_PARALLEL = 32
 
 
 @dataclass
@@ -232,6 +256,8 @@ def _ast_to_dict(node: Any) -> Any:
         d["tool_name"] = node.tool_name
         d["inputs"] = {k: _ast_to_dict(v) for k, v in node.inputs.items()}
         d["output_var"] = node.output_var
+        if node.retries:
+            d["retries"] = node.retries
     elif isinstance(node, Filter):
         d["condition"] = _ast_to_dict(node.condition)
         d["input_var"] = node.input_var
@@ -243,6 +269,8 @@ def _ast_to_dict(node: Any) -> Any:
         d["prompt"] = node.prompt
         d["input_var"] = node.input_var
         d["output_var"] = node.output_var
+        if node.retries:
+            d["retries"] = node.retries
     elif isinstance(node, Verify):
         d["condition"] = _ast_to_dict(node.condition)
     elif isinstance(node, Return):
@@ -256,12 +284,24 @@ def _ast_to_dict(node: Any) -> Any:
         d["source"] = _ast_to_dict(node.source)
         d["body"] = [_ast_to_dict(s) for s in node.body]
         d["output_var"] = node.output_var
+        if node.parallel:
+            d["parallel"] = node.parallel
     elif isinstance(node, If):
         d["condition"] = _ast_to_dict(node.condition)
         d["then"] = [_ast_to_dict(s) for s in node.then]
         d["else"] = [_ast_to_dict(s) for s in node.else_]
     elif isinstance(node, Yield):
         d["value"] = _ast_to_dict(node.value)
+    elif isinstance(node, Try):
+        d["body"] = [_ast_to_dict(s) for s in node.body]
+        d["handler"] = [_ast_to_dict(s) for s in node.handler]
+        d["error_var"] = node.error_var
+    elif isinstance(node, RunProgram):
+        d["path"] = node.path
+        d["inputs"] = {k: _ast_to_dict(v) for k, v in node.inputs.items()}
+        d["output_var"] = node.output_var
+        if node.retries:
+            d["retries"] = node.retries
     elif isinstance(node, Program):
         d["agent"] = _ast_to_dict(node.agent)
         d["memory"] = _ast_to_dict(node.memory)
@@ -362,6 +402,7 @@ def dict_to_ast(data: Any) -> ASTNode:
             tool_name=tool_name,
             inputs={k: dict_to_ast(v) for k, v in inputs.items()},
             output_var=output_var,
+            retries=_count(data, "retries", MAX_RETRIES),
         )
 
     if nt == "filter":
@@ -379,6 +420,7 @@ def dict_to_ast(data: Any) -> ASTNode:
             prompt=data["prompt"],
             input_var=data["input_var"],
             output_var=data["output_var"],
+            retries=_count(data, "retries", MAX_RETRIES),
         )
 
     if nt == "verify":
@@ -410,6 +452,7 @@ def dict_to_ast(data: Any) -> ASTNode:
             source=dict_to_ast(data.get("source")),
             body=[dict_to_ast(s) for s in body],
             output_var=data.get("output_var") or None,
+            parallel=_count(data, "parallel", MAX_PARALLEL),
         )
 
     if nt == "if":
@@ -424,6 +467,30 @@ def dict_to_ast(data: Any) -> ASTNode:
 
     if nt == "yield":
         return Yield(value=dict_to_ast(data.get("value")))
+
+    if nt == "try":
+        body, handler = data.get("body"), data.get("handler")
+        if not isinstance(body, list) or not body or not isinstance(handler, list) or not handler:
+            raise ForgeValidateError("try.body and try.handler must be non-empty lists of steps")
+        return Try(
+            body=[dict_to_ast(s) for s in body],
+            handler=[dict_to_ast(s) for s in handler],
+            error_var=str(data.get("error_var") or "error"),
+        )
+
+    if nt == "run_program":
+        path, out = data.get("path"), data.get("output_var")
+        if not isinstance(path, str) or not path or not isinstance(out, str) or not out:
+            raise ForgeValidateError("run_program needs path and output_var strings")
+        inputs = data.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            raise ForgeValidateError("run_program.inputs must be an object")
+        return RunProgram(
+            path=path,
+            inputs={k: dict_to_ast(v) for k, v in inputs.items()},
+            output_var=out,
+            retries=_count(data, "retries", MAX_RETRIES),
+        )
 
     if nt == "program":
         memory = data.get("memory")
@@ -445,6 +512,13 @@ def dict_to_ast(data: Any) -> ASTNode:
         )
 
     raise ForgeValidateError(f"Unknown node_type: {nt}")
+
+
+def _count(data: dict, key: str, limit: int) -> int:
+    value = data.get(key) or 0
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= limit:
+        raise ForgeValidateError(f"{data.get('node_type')}.{key} must be an integer 0..{limit}")
+    return value
 
 
 def _parse_condition_string(s: str) -> Comparison:
@@ -550,8 +624,18 @@ def validate_ast(node: ASTNode, path: str = "program") -> list[str]:
             elif isinstance(action, Yield):
                 if action.value is None:
                     errors.append(f"{sp}.action: YIELD needs a value")
+            elif isinstance(action, Try):
+                if not action.body or not action.handler:
+                    errors.append(f"{sp}.action: TRY and ON ERROR blocks must not be empty")
+                check_steps(action.body, f"{sp}.body")
+                check_steps(action.handler, f"{sp}.handler")
+            elif isinstance(action, RunProgram):
+                if not action.path or not action.output_var:
+                    errors.append(f"{sp}.action: RUN needs a file path and OUTPUT")
             else:
-                errors.append(f"{sp}.action: must be tool_call, filter, reason, verify, for_each, if, or yield")
+                errors.append(
+                    f"{sp}.action: must be tool_call, filter, reason, verify, for_each, if, yield, try, or run_program"
+                )
 
     check_steps(node.steps, f"{path}.steps")
 
@@ -663,6 +747,16 @@ def check_program(program: Program, tool_names: Optional[list] = None) -> list[s
             if not in_loop:
                 errors.append(f"{where}: YIELD is only allowed inside FOR EACH ... END")
             use_value(action.value, "YIELD", defined)
+        elif isinstance(action, Try):
+            body_defs, handler_defs = set(defined), defined | {action.error_var}
+            check_block(action.body, body_defs, in_loop)
+            check_block(action.handler, handler_defs, in_loop)
+            # Visible after END only if set whether or not the body failed
+            defined |= body_defs & handler_defs
+        elif isinstance(action, RunProgram):
+            for v in action.inputs.values():
+                use_value(v, where, defined)
+            defined.add(action.output_var)
 
     defined: set[str] = set()
     if program.memory:
@@ -687,6 +781,7 @@ KEYWORDS = {
     "ON", "REASON", "VERIFY", "RETURN",
     "FOR", "EACH", "IN", "IF", "ELSE", "END", "YIELD",
     "AND", "OR", "CONTAINS",
+    "PARALLEL", "TRY", "ERROR", "RETRY", "RUN",
     "true", "false", "null",
 }
 
@@ -944,6 +1039,17 @@ class Parser:
                 steps.append(Step(step_name=f"verify_{n}", action=self._parse_verify()))
             elif self._match_keyword("FOR"):
                 steps.append(Step(step_name=f"for_{n}", action=self._parse_for()))
+            elif self._match_keyword("PARALLEL"):
+                self._advance()
+                width = 8
+                if self._cur().type == "NUMBER":
+                    width = self._parse_count(MAX_PARALLEL, "PARALLEL", minimum=1)
+                if not self._match_keyword("FOR"):
+                    tok = self._cur()
+                    raise ForgeParseError(f"Expected FOR EACH after PARALLEL at {tok.line}:{tok.col}")
+                steps.append(Step(step_name=f"for_{n}", action=self._parse_for(parallel=width)))
+            elif self._match_keyword("TRY"):
+                steps.append(Step(step_name=f"try_{n}", action=self._parse_try()))
             elif self._match_keyword("IF"):
                 steps.append(Step(step_name=f"if_{n}", action=self._parse_if()))
             elif self._match_keyword("YIELD"):
@@ -952,7 +1058,37 @@ class Parser:
             else:
                 return steps
 
-    def _parse_for(self) -> ForEach:
+    def _parse_try(self) -> Try:
+        """TRY ... ON ERROR ... END   ($error holds the failure message)"""
+        start = self._expect("KEYWORD", "TRY")
+        body = self._parse_block()
+        if not (self._match_keyword("ON") and self._peek(1).type == "KEYWORD" and self._peek(1).value == "ERROR"):
+            tok = self._cur()
+            raise ForgeParseError(
+                f"Expected ON ERROR for TRY from {start.line}:{start.col}, got {tok.type} {tok.value!r} at {tok.line}:{tok.col}"
+            )
+        self._advance()
+        self._advance()
+        handler = self._parse_block()
+        self._expect_end("TRY", start)
+        if not body or not handler:
+            raise ForgeParseError(f"TRY at {start.line}:{start.col} needs steps in both TRY and ON ERROR")
+        return Try(body=body, handler=handler)
+
+    def _parse_count(self, limit: int, what: str, minimum: int = 0) -> int:
+        tok = self._expect("NUMBER")
+        if not isinstance(tok.value, int) or not minimum <= tok.value <= limit:
+            raise ForgeParseError(f"{what} needs a whole number {minimum}..{limit} at {tok.line}:{tok.col}")
+        return tok.value
+
+    def _parse_retry(self) -> int:
+        """Optional `RETRY n` after a step's OUTPUT name."""
+        if self._match_keyword("RETRY"):
+            self._advance()
+            return self._parse_count(MAX_RETRIES, "RETRY")
+        return 0
+
+    def _parse_for(self, parallel: int = 0) -> ForEach:
         """FOR EACH item IN $list [OUTPUT results] ... END"""
         start = self._expect("KEYWORD", "FOR")
         if self._match_keyword("EACH"):
@@ -971,7 +1107,7 @@ class Parser:
         self._expect_end("FOR", start)
         if not body:
             raise ForgeParseError(f"FOR EACH at {start.line}:{start.col} has an empty body")
-        return ForEach(var=var, source=source, body=body, output_var=output_var)
+        return ForEach(var=var, source=source, body=body, output_var=output_var, parallel=parallel)
 
     def _parse_if(self) -> If:
         """IF condition ... [ELSE ...] END"""
@@ -1068,17 +1204,18 @@ class Parser:
             self._skip_optional_annotation()
             return Step(
                 step_name=step_name,
-                action=Reason(prompt=prompt, input_var=input_var, output_var=output_var),
+                action=Reason(prompt=prompt, input_var=input_var, output_var=output_var,
+                              retries=self._parse_retry()),
             )
+        if self._match_keyword("RUN"):
+            return Step(step_name=step_name, action=self._parse_run())
 
         raise ForgeParseError(
-            f"Expected TOOL, FILTER, or REASON after STEP name, got {self._cur().value!r} "
+            f"Expected TOOL, FILTER, REASON or RUN after STEP name, got {self._cur().value!r} "
             f"at {self._cur().line}:{self._cur().col}"
         )
 
-    def _parse_tool_call(self) -> ToolCall:
-        self._expect("KEYWORD", "TOOL")
-        tool_name = self._expect("IDENT").value
+    def _parse_inputs(self) -> dict:
         self._expect("KEYWORD", "INPUT")
         self._expect("{")
         inputs: dict[str, ASTNode] = {}
@@ -1091,10 +1228,26 @@ class Parser:
             if self._cur().type == ",":
                 self._advance()
         self._expect("}")
+        return inputs
+
+    def _parse_tool_call(self) -> ToolCall:
+        self._expect("KEYWORD", "TOOL")
+        tool_name = self._expect("IDENT").value
+        inputs = self._parse_inputs()
         self._expect("KEYWORD", "OUTPUT")
         output_var = self._expect("IDENT").value
         self._skip_optional_annotation()
-        return ToolCall(tool_name=tool_name, inputs=inputs, output_var=output_var)
+        return ToolCall(tool_name=tool_name, inputs=inputs, output_var=output_var,
+                        retries=self._parse_retry())
+
+    def _parse_run(self) -> RunProgram:
+        """RUN "other.forge" [INPUT { k: $v }] OUTPUT x [RETRY n]"""
+        self._expect("KEYWORD", "RUN")
+        path = self._expect("STRING").value
+        inputs = self._parse_inputs() if self._match_keyword("INPUT") else {}
+        self._expect("KEYWORD", "OUTPUT")
+        output_var = self._expect("IDENT").value
+        return RunProgram(path=path, inputs=inputs, output_var=output_var, retries=self._parse_retry())
 
     def _parse_filter(self) -> Filter:
         self._expect("KEYWORD", "FILTER")
@@ -1114,7 +1267,8 @@ class Parser:
         self._expect("KEYWORD", "OUTPUT")
         output_var = self._expect("IDENT").value
         self._skip_optional_annotation()
-        return Reason(prompt=prompt, input_var=input_var, output_var=output_var)
+        return Reason(prompt=prompt, input_var=input_var, output_var=output_var,
+                      retries=self._parse_retry())
 
     def _skip_optional_annotation(self) -> None:
         """AIs sometimes append a label string after OUTPUT var — ignore it."""

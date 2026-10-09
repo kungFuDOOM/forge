@@ -26,6 +26,8 @@ from forge_core import (
     Program,
     Reason,
     Return,
+    RunProgram,
+    Try,
     Step,
     ToolCall,
     Variable,
@@ -52,6 +54,10 @@ class ForgeVerifyError(ForgeRuntimeError):
 
 class ForgeCheckError(ForgeRuntimeError):
     """Static pre-run check failed (nothing was executed)."""
+
+
+class ForgeBudgetError(ForgeRuntimeError):
+    """Step or time budget exhausted. Never caught by TRY or RETRY."""
 
 
 # =============================================================================
@@ -773,6 +779,10 @@ VERIFY $x.status == 200                       stop the run if false
 FOR EACH item IN $list OUTPUT out ... END     loop; out = list of YIELDed values
   YIELD { k: $item.f }                        (no YIELD: out = last OUTPUT per item)
 IF cond ... ELSE ... END                      branch
+PARALLEL 8 FOR EACH ... END                   same loop, up to 8 items at once
+TRY ... ON ERROR ... END                      on failure run the handler; $error = message
+STEP s TOOL t INPUT {..} OUTPUT x RETRY 2     retry a failing TOOL / REASON / RUN step
+STEP s RUN "other.forge" INPUT { k: $v } OUTPUT x   run another program; INPUT sets its MEMORY
 RETURN { k: $x }                              required, last
 
 Values: "text" 12 -3.5 true false null [a, b] { k: v } $var $var.field $var.0.field
@@ -800,6 +810,37 @@ DEFAULT_MAX_STEPS = 10_000
 REASON_CONTEXT_CHARS = int(os.environ.get("FORGE_REASON_MAX_CHARS", "40000"))  # ~10k tokens
 
 
+MAX_RUN_DEPTH = 8  # nested RUN "other.forge" calls
+
+
+class _Budget:
+    """Step + time budget shared by a run, its parallel iterations and RUN children."""
+
+    def __init__(self, max_steps: Optional[int], max_seconds: Optional[float]) -> None:
+        import threading
+        import time
+
+        self.max_steps = max_steps
+        self.max_seconds = max_seconds
+        self.deadline = time.monotonic() + max_seconds if max_seconds else None
+        self.steps = 0
+        self._lock = threading.Lock()
+
+    def tick(self, where: str) -> None:
+        with self._lock:
+            self.steps += 1
+            steps = self.steps
+        if self.max_steps is not None and steps > self.max_steps:
+            raise ForgeBudgetError(f"Step budget exceeded ({self.max_steps} steps) at {where}")
+        self.check_time(where)
+
+    def check_time(self, where: str) -> None:
+        import time
+
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise ForgeBudgetError(f"Time budget exceeded ({self.max_seconds}s) at {where}")
+
+
 class Evaluator:
     def __init__(
         self,
@@ -807,6 +848,7 @@ class Evaluator:
         llm: Optional[LLMClient] = None,
         max_steps: Optional[int] = DEFAULT_MAX_STEPS,
         max_seconds: Optional[float] = None,
+        base_dir: Optional[str] = None,
     ):
         self.tools = tools or ToolRegistry()
         self.llm = llm or MockLLMClient()
@@ -814,18 +856,24 @@ class Evaluator:
         self.agent_name: str = ""
         self.max_steps = max_steps
         self.max_seconds = max_seconds
-        self.steps_run = 0
-        self._deadline: Optional[float] = None
-        self._yields: list[list] = []
+        # Directory RUN paths resolve against (the program file's folder); default cwd
+        self.base_dir = base_dir
+        self._budget = _Budget(max_steps, max_seconds)
+        self._collector: Optional[list] = None  # YIELD target inside a loop body
+        self._depth = 0
+
+    @property
+    def steps_run(self) -> int:
+        return self._budget.steps
 
     def run(self, program: Program) -> Any:
-        import time
+        self._budget = _Budget(self.max_steps, self.max_seconds)
+        return self._run(program)
 
+    def _run(self, program: Program, overrides: Optional[dict] = None) -> Any:
         self.memory = {}
         self.agent_name = program.agent.name
-        self.steps_run = 0
-        self._yields = []
-        self._deadline = time.monotonic() + self.max_seconds if self.max_seconds else None
+        self._collector = None
 
         # 0. Static check — fail before any tool or LLM call is spent
         problems = check_program(program, self.tools.names())
@@ -833,11 +881,12 @@ class Evaluator:
             raise ForgeCheckError("Check failed:\n  " + "\n  ".join(problems))
 
         # 1. AGENT — identity only
-        # 2. MEMORY
+        # 2. MEMORY (a RUN caller's INPUT overrides it)
         if program.memory:
             self._eval_memory(program.memory)
+        self.memory.update(overrides or {})
 
-        # 3. STEPS (incl. REASON / VERIFY / FOR / IF in program order)
+        # 3. STEPS (incl. REASON / VERIFY / FOR / IF / TRY in program order)
         self._exec_block(program.steps)
 
         # 4. REASON
@@ -851,6 +900,15 @@ class Evaluator:
         # 6. RETURN
         return self._eval_return(program.return_stmt)
 
+    def _child(self, memory: dict) -> "Evaluator":
+        """Evaluator for a loop iteration: own memory, shared tools/LLM/budget."""
+        import copy
+
+        child = copy.copy(self)
+        child.memory = memory
+        child._collector = []
+        return child
+
     def _eval_memory(self, block: MemoryBlock) -> None:
         for entry in block.entries:
             self.memory[entry.key] = self._eval_value(entry.value)
@@ -859,22 +917,24 @@ class Evaluator:
         for step in steps:
             self._eval_step(step)
 
-    def _tick(self, step: Step) -> None:
-        """Budget guard: a runaway loop stops instead of hanging the caller."""
+    def _with_retries(self, retries: int, where: str, fn: Callable[[], Any]) -> Any:
+        """Run fn, retrying failures `retries` times with short backoff."""
         import time
 
-        self.steps_run += 1
-        if self.max_steps is not None and self.steps_run > self.max_steps:
-            raise ForgeRuntimeError(
-                f"Step budget exceeded ({self.max_steps} steps) at STEP {step.step_name}"
-            )
-        if self._deadline is not None and time.monotonic() > self._deadline:
-            raise ForgeRuntimeError(
-                f"Time budget exceeded ({self.max_seconds}s) at STEP {step.step_name}"
-            )
+        for attempt in range(retries + 1):
+            try:
+                return fn()
+            except ForgeBudgetError:
+                raise
+            except Exception:
+                if attempt == retries:
+                    raise
+                time.sleep(min(0.2 * 2 ** attempt, 2.0))
+                self._budget.tick(f"{where} (retry {attempt + 1})")
 
     def _eval_step(self, step: Step) -> None:
-        self._tick(step)
+        where = f"STEP {step.step_name}"
+        self._budget.tick(where)
         action = step.action
         if isinstance(action, ForEach):
             self._eval_for(action)
@@ -882,17 +942,31 @@ class Evaluator:
             branch = action.then if self._eval_comparison(action.condition) else action.else_
             self._exec_block(branch)
         elif isinstance(action, Yield):
-            self._yields[-1].append(self._eval_value(action.value))
+            self._collector.append(self._eval_value(action.value))
+        elif isinstance(action, Try):
+            try:
+                self._exec_block(action.body)
+            except ForgeBudgetError:
+                raise
+            except Exception as e:
+                self.memory[action.error_var] = f"{type(e).__name__}: {e}"
+                self._exec_block(action.handler)
         elif isinstance(action, ToolCall):
             inputs = {k: self._eval_value(v) for k, v in action.inputs.items()}
-            result = self.tools.call(action.tool_name, inputs)
-            self.memory[action.output_var] = result
+            self.memory[action.output_var] = self._with_retries(
+                action.retries, where, lambda: self.tools.call(action.tool_name, inputs)
+            )
+        elif isinstance(action, RunProgram):
+            inputs = {k: self._eval_value(v) for k, v in action.inputs.items()}
+            self.memory[action.output_var] = self._with_retries(
+                action.retries, where, lambda: self._eval_run(action, inputs)
+            )
         elif isinstance(action, Filter):
             source = self._resolve_var(action.input_var)
             result = self._eval_filter(action.condition, source)
             self.memory[action.output_var] = result
         elif isinstance(action, Reason):
-            self._eval_reason(action)
+            self._with_retries(action.retries, where, lambda: self._eval_reason(action))
         elif isinstance(action, Verify):
             self._eval_verify(action)
         else:
@@ -908,21 +982,59 @@ class Evaluator:
             )
         # Without YIELD, collect the body's last output each iteration
         implicit = None if _has_yield(loop.body) else _last_output(loop.body)
-        outer = self.memory
-        results: list = []
-        self._yields.append(results)
-        try:
-            for item in items:
-                self.memory = dict(outer)  # body is its own scope
-                self.memory[loop.var] = item
-                self._exec_block(loop.body)
-                if implicit:
-                    results.append(self.memory.get(implicit))
-        finally:
-            self._yields.pop()
-            self.memory = outer
+
+        def iteration(item: Any) -> list:
+            child = self._child({**self.memory, loop.var: item})  # body is its own scope
+            child._exec_block(loop.body)
+            return [child.memory.get(implicit)] if implicit else child._collector
+
+        if loop.parallel and len(items) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=min(loop.parallel, len(items))) as pool:
+                futures = [pool.submit(iteration, item) for item in items]
+            chunks, first_error = [], None
+            for f in futures:  # keep input order; report the earliest failure
+                try:
+                    chunks.append(f.result())
+                except Exception as e:
+                    first_error = first_error or e
+            if first_error:
+                raise first_error
+        else:
+            chunks = [iteration(item) for item in items]
         if loop.output_var:
-            self.memory[loop.output_var] = results
+            self.memory[loop.output_var] = [x for chunk in chunks for x in chunk]
+
+    def _eval_run(self, action: RunProgram, inputs: dict) -> Any:
+        """RUN another .forge program: its MEMORY is overridden by INPUT."""
+        from pathlib import Path
+
+        if self._depth >= MAX_RUN_DEPTH:
+            raise ForgeRuntimeError(f"RUN nested deeper than {MAX_RUN_DEPTH} programs")
+        base = Path(self.base_dir or Path.cwd()).resolve()
+        path = (base / action.path).resolve()
+        allowed = [Path.cwd().resolve(), base]
+        if not any(path == root or root in path.parents for root in allowed):
+            raise ForgeRuntimeError(
+                f"RUN path must be inside {allowed[0]} or the calling program's folder: {action.path}"
+            )
+        if path.suffix not in (".forge", ".json"):
+            raise ForgeRuntimeError(f"RUN needs a .forge or .json program file: {action.path}")
+        if not path.is_file():
+            raise ForgeRuntimeError(f"RUN program not found: {action.path}")
+        program = compile_auto(path.read_text(encoding="utf-8"))
+        keys = [e.key for e in program.memory.entries] if program.memory else []
+        unknown = sorted(set(inputs) - set(keys))
+        if unknown:
+            raise ForgeRuntimeError(
+                f"{action.path} has no MEMORY key {', '.join(unknown)} "
+                f"(its MEMORY keys: {', '.join(keys) or 'none'})"
+            )
+        child = Evaluator(tools=self.tools, llm=self.llm, base_dir=str(path.parent))
+        child._budget = self._budget  # shared step/time budget
+        child._depth = self._depth + 1
+        return child._run(program, overrides=inputs)
 
     def _eval_filter(self, condition: Comparison, source: Any) -> Any:
         # List: filter items
@@ -1122,7 +1234,7 @@ def run_forge(
     **limits: Any,
 ) -> Any:
     """Compile and execute Forge source (text syntax or JSON AST string).
-    limits: max_steps, max_seconds (see Evaluator)."""
+    limits: max_steps, max_seconds, base_dir (see Evaluator)."""
     program = compile_auto(source)
     return Evaluator(tools=tools, llm=llm, **limits).run(program)
 
